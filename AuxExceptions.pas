@@ -1,3 +1,26 @@
+{-------------------------------------------------------------------------------
+
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+-------------------------------------------------------------------------------}
+{===============================================================================
+
+  AuxExceptions
+
+    Set of exception classes designed to simplify exception creation in
+    specific situations (eg. index out of bounds, invalid variable value,
+    sytem error, ...).
+
+  ©František Milt 2019-01-05
+
+  Version 0.9 (under developent)
+
+  Dependencies:
+    AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
+
+===============================================================================}
 unit AuxExceptions;
 
 {$IF defined(CPU64) or defined(CPU64BITS)}
@@ -19,44 +42,54 @@ unit AuxExceptions;
 {$IF Defined(WINDOWS) or Defined(MSWINDOWS)}
   {$DEFINE Windows}
 {$ELSE}
-  {$IF not (Defined(UNIX) or Defined(POSIX))}
-    {$MESSAGE FATAL 'Unsupported operating system.'}
-  {$IFEND}
+  // for now unsupported, will try to add support for linux later
+  {$MESSAGE FATAL 'Unsupported operating system.'}
+  //{$IF not (Defined(UNIX) or Defined(POSIX))}
+  //  {$MESSAGE FATAL 'Unsupported operating system.'}
+  //{$IFEND}
 {$IFEND}
 
 {$IFDEF FPC}
   {$MODE ObjFPC}{$H+}
-  //{$ASMMODE Intel}
-  //{$DEFINE FPC_DisableWarns}
-  //{$MACRO ON}
 {$ENDIF}
 
 {
-  EnableStackTrace
+  ExtendedException
+
+  When defined, EGeneralException and all its subclasses provide extended
+  error information (stack trace, CPU registers snapshot, ...).
+
+  NOTE - currently not implemented.
 
   Enabled by default.
 }
-{$DEFINE EnableStackTrace}
+{$DEFINE EnableExtendedException}
 
 // do not touch following...
-{$IF not Defined(PurePascal) and Defined(EnableStackTrace)}
-  {$DEFINE StackTraceEnabled}  
+{$IF not Defined(PurePascal) and Defined(EnableExtendedException)}
+  {$DEFINE ExtendedException}
 {$ELSE}
-  {$UNDEF StackTraceEnabled}
+  {$UNDEF ExtendedException}
 {$IFEND}
 
 interface
 
 uses
-  {$IFDEF Windows}Windows,{$ELSE}{$MESSAGE ERROR 'implement for lin'}{$ENDIF} SysUtils,
+  Windows, SysUtils,
   AuxTypes;
 
+{===============================================================================
+--------------------------------------------------------------------------------
+                             Base exception classes
+--------------------------------------------------------------------------------
+===============================================================================}
+
 type
-{$IFDEF Windows}
   TThreadID = DWORD;
-{$ELSE}
-{$MESSAGE ERROR 'implement for lin'}
-{$ENDIF}
+
+{===============================================================================
+    ECustomException - class declaration
+===============================================================================}
 
   ECustomException = class(Exception)
   protected
@@ -68,15 +101,19 @@ type
     property ThreadID: TThreadID read fThreadID;
   end;
 
-{$IFDEF StackTraceEnabled}
-  EExtendedException = class(ECustomException);  // later implement stack trace
+{$IFDEF ExtendedException}
+{===============================================================================
+    EExtendedException - class declaration
+===============================================================================}
+  EExtendedException = class(ECustomException);  // later implement
 
-  EBaseException = EExtendedException;
-{$ELSE}
-  EBaseException = ECustomException;
-{$ENDIF}
-
-  EGeneralException = class(EBaseException)
+{===============================================================================
+    EGeneralException - class declaration
+===============================================================================}
+  EGeneralException = class(EExtendedException)
+{$ELSE ExtendedException}
+  EGeneralException = class(ECustomException)
+{$ENDIF ExtendedException}
   private
     fFaultingObject:    String;
     fFaultingFunction:  String;
@@ -89,6 +126,16 @@ type
     property FullMessage: String read fFullMessage;
   end;
 
+{===============================================================================
+--------------------------------------------------------------------------------
+                                 System errors
+--------------------------------------------------------------------------------
+===============================================================================}
+
+{===============================================================================
+    ESystemError - class declaration
+===============================================================================}
+
   ESystemError = class(EGeneralException)
   private
     fErrorCode: UInt32;
@@ -96,6 +143,16 @@ type
     constructor Create(FullSysMsg: Boolean; FaultObject: TObject; const FaultFunction: String); overload;
     property ErrorCode: UInt32 read fErrorCode;
   end;
+
+{===============================================================================
+--------------------------------------------------------------------------------
+                                  Index errors
+--------------------------------------------------------------------------------
+===============================================================================}
+
+{===============================================================================
+    EIndexException - class declaration
+===============================================================================}
 
   EIndexException = class(EGeneralException)
   protected
@@ -107,25 +164,51 @@ type
     property Index: Integer read fIndex;
   end;
 
+{===============================================================================
+    EIndexOutOfBounds - class declaration
+===============================================================================}
+
   EIndexOutOfBounds = class(EIndexException)
   protected
     class Function GetDefaultMessage: String; override;
   end;
+
+{===============================================================================
+    EIndexTooLow - class declaration
+===============================================================================}
 
   EIndexTooLow = class(EIndexException)
   protected
     class Function GetDefaultMessage: String; override;
   end;
 
+{===============================================================================
+    EIndexTooHigh - class declaration
+===============================================================================}
+
   EIndexTooHigh = class(EIndexException)
   protected
     class Function GetDefaultMessage: String; override;
   end;
 
+{===============================================================================
+    EIndexInvalid - class declaration
+===============================================================================}
+
   EIndexInvalid = class(EIndexException)
   protected
     class Function GetDefaultMessage: String; override;
   end;
+
+{===============================================================================
+--------------------------------------------------------------------------------
+                                  Value errors
+--------------------------------------------------------------------------------
+===============================================================================}
+
+{===============================================================================
+    EValueException - class declaration
+===============================================================================}
 
   EValueException = class(EGeneralException)
   protected
@@ -142,10 +225,18 @@ type
     property Value: Variant read fValue;
   end;
 
+{===============================================================================
+    EValueInvalid - class declaration
+===============================================================================}
+
   EValueInvalid = class(EValueException)
   protected
     class Function GetDefaultMessage(ValueString: Boolean): String; override;
   end;
+
+{===============================================================================
+    EValueInvalidNameOnly - class declaration
+===============================================================================}
 
   EValueInvalidNameOnly = class(EValueException)
   protected
@@ -157,18 +248,26 @@ implementation
 uses
   Variants;
 
+{===============================================================================
+--------------------------------------------------------------------------------
+                             Base exception classes
+--------------------------------------------------------------------------------
+===============================================================================}
+
+{===============================================================================
+    ECustomException - class implementation
+===============================================================================}
+
 constructor ECustomException.CreateFmt(const Msg: String; Args: array of const);
 begin
 inherited CreateFmt(Msg,Args);
 fTime := Now;
-{$IFDEF Windows}
 fThreadID := GetCurrentThreadID;
-{$ELSE}
-{$MESSAGE ERROR 'implement for lin'}
-{$ENDIF}
 end;
 
-//==============================================================================
+{===============================================================================
+    EGeneralException - class implementation
+===============================================================================}
 
 constructor EGeneralException.CreateFmt(const Msg: String; Args: array of const; FaultObject: TObject; const FaultFunction: String);
 
@@ -207,7 +306,16 @@ begin
 CreateFmt(Msg,[],FaultObject,FaultFunction);
 end;
 
-//==============================================================================
+
+{===============================================================================
+--------------------------------------------------------------------------------
+                                 System errors                                  
+--------------------------------------------------------------------------------
+===============================================================================}
+
+{===============================================================================
+    ESystemError - class implementation
+===============================================================================}
 
 constructor ESystemError.Create(FullSysMsg: Boolean; FaultObject: TObject; const FaultFunction: String);
 var
@@ -221,14 +329,29 @@ else
 fErrorCode := ErrCode;
 end;
 
-//==============================================================================
+
+{===============================================================================
+--------------------------------------------------------------------------------
+                                  Index errors
+--------------------------------------------------------------------------------
+===============================================================================}
+
+{===============================================================================
+    EIndexException - class implementation
+===============================================================================}
+
+{-------------------------------------------------------------------------------
+    EIndexException - protected methods
+-------------------------------------------------------------------------------}
 
 class Function EIndexException.GetDefaultMessage: String;
 begin
 Result := 'Index (%d) error.';
 end;
 
-//------------------------------------------------------------------------------
+{-------------------------------------------------------------------------------
+    EIndexException - public methods
+-------------------------------------------------------------------------------}
 
 constructor EIndexException.Create(const Msg: String; Index: Integer; FaultObject: TObject; const FaultFunction: String);
 begin
@@ -243,35 +366,56 @@ begin
 Create(GetDefaultMessage,Index,FaultObject,FaultFunction);
 end;
 
-//==============================================================================
+{===============================================================================
+    EIndexOutOfBounds - class implementation
+===============================================================================}
 
 class Function EIndexOutOfBounds.GetDefaultMessage: String;
 begin
 Result := 'Index (%d) out of bounds.';
 end;
 
-//==============================================================================
+{===============================================================================
+    EIndexTooLow - class implementation
+===============================================================================}
 
 class Function EIndexTooLow.GetDefaultMessage: String;
 begin
 Result := 'Index (%d) too low.';
 end;
 
-//==============================================================================
+{===============================================================================
+    EIndexTooHigh - class implementation
+===============================================================================}
 
 class Function EIndexTooHigh.GetDefaultMessage: String;
 begin
 Result := 'Index (%d) too high.';
 end;
 
-//==============================================================================
+{===============================================================================
+    EIndexInvalid - class implementation
+===============================================================================}
 
 class Function EIndexInvalid.GetDefaultMessage: String;
 begin
 Result := 'Index (%d) is invalid.';
 end;
 
-//==============================================================================
+
+{===============================================================================
+--------------------------------------------------------------------------------
+                                  Value errors
+--------------------------------------------------------------------------------
+===============================================================================}
+
+{===============================================================================
+    EValueException - class implementation
+===============================================================================}
+
+{-------------------------------------------------------------------------------
+    EValueException - protected methods
+-------------------------------------------------------------------------------}
 
 class Function EValueException.VariantArrayToStr(Value: Variant): String;
 var
@@ -318,7 +462,9 @@ else
   Result := 'Value %s error.';
 end;
 
-//------------------------------------------------------------------------------
+{-------------------------------------------------------------------------------
+    EValueException - public methods
+-------------------------------------------------------------------------------}
 
 constructor EValueException.Create(const Msg,ValueName: String; Value: Variant; FaultObject: TObject; const FaultFunction: String);
 begin
@@ -350,7 +496,9 @@ begin
 Create(GetDefaultMessage(False),ValueName,FaultObject,FaultFunction);
 end;
 
-//==============================================================================
+{===============================================================================
+    EValueInvalid - class implementation
+===============================================================================}
 
 class Function EValueInvalid.GetDefaultMessage(ValueString: Boolean): String;
 begin
@@ -360,7 +508,9 @@ else
   Result := 'Invalid %s value.';
 end;
 
-//==============================================================================
+{===============================================================================
+    EValueInvalidNameOnly - class implementation
+===============================================================================}
 
 class Function EValueInvalidNameOnly.GetDefaultMessage(ValueString: Boolean): String;
 begin
