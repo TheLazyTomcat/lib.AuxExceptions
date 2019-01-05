@@ -26,22 +26,20 @@ unit AuxExceptions;
 
 {$IFDEF FPC}
   {$MODE ObjFPC}{$H+}
-  {$INLINE ON}
-  {$DEFINE CanInline}
   //{$ASMMODE Intel}
   //{$DEFINE FPC_DisableWarns}
   //{$MACRO ON}
-{$ELSE}
-  {$IF CompilerVersion >= 17 then}  // Delphi 2005+
-    {$DEFINE CanInline}
-  {$ELSE}
-    {$UNDEF CanInline}
-  {$IFEND}
 {$ENDIF}
 
-{.$DEFINE EnbaleStackTrace}
+{
+  EnableStackTrace
 
-{$IF not Defined(PurePascal) and Defined(EnbaleStackTrace)}
+  Enabled by default.
+}
+{$DEFINE EnableStackTrace}
+
+// do not touch following...
+{$IF not Defined(PurePascal) and Defined(EnableStackTrace)}
   {$DEFINE StackTraceEnabled}  
 {$ELSE}
   {$UNDEF StackTraceEnabled}
@@ -71,9 +69,9 @@ type
   end;
 
 {$IFDEF StackTraceEnabled}
-  ETraceException = class(ECustomException);  // later implement stack trace
+  EExtendedException = class(ECustomException);  // later implement stack trace
 
-  EBaseException = ETraceException;
+  EBaseException = EExtendedException;
 {$ELSE}
   EBaseException = ECustomException;
 {$ENDIF}
@@ -84,8 +82,8 @@ type
     fFaultingFunction:  String;
     fFullMessage:       String;
   public
-    constructor CreateFmt(const Msg: String; Args: array of const; FaultingObject: TObject; const FaultingFunction: String); overload;
-    constructor Create(const Msg: String; FaultingObject: TObject; const FaultingFunction: String); overload;
+    constructor CreateFmt(const Msg: String; Args: array of const; FaultObject: TObject; const FaultFunction: String); overload;
+    constructor Create(const Msg: String; FaultObject: TObject; const FaultFunction: String); overload;
     property FaultingObject: String read fFaultingObject;
     property FaultingFunction: String read fFaultingFunction;
     property FullMessage: String read fFullMessage;
@@ -95,7 +93,7 @@ type
   private
     fErrorCode: UInt32;
   public
-    constructor Create(FullSysMsg: Boolean; FaultingObject: TObject; const FaultingFunction: String); overload;
+    constructor Create(FullSysMsg: Boolean; FaultObject: TObject; const FaultFunction: String); overload;
     property ErrorCode: UInt32 read fErrorCode;
   end;
 
@@ -104,8 +102,8 @@ type
     fIndex: Integer;
     class Function GetDefaultMessage: String; virtual;
   public
-    constructor Create(const Msg: String; Index: Integer; FaultingObject: TObject; const FaultingFunction: String); overload;
-    constructor Create(Index: Integer; FaultingObject: TObject; const FaultingFunction: String); overload;
+    constructor Create(const Msg: String; Index: Integer; FaultObject: TObject; const FaultFunction: String); overload;
+    constructor Create(Index: Integer; FaultObject: TObject; const FaultFunction: String); overload;
     property Index: Integer read fIndex;
   end;
 
@@ -136,20 +134,20 @@ type
     class Function VariantArrayToStr(Value: Variant): String; virtual;
     class Function GetDefaultMessage(ValueString: Boolean): String; virtual;
   public
-    constructor Create(const Msg,ValueName: String; Value: Variant; FaultingObject: TObject; const FaultingFunction: String); overload;
-    constructor Create(const Msg,ValueName: String; FaultingObject: TObject; const FaultingFunction: String); overload;  
-    constructor Create(const ValueName: String; Value: Variant; FaultingObject: TObject; const FaultingFunction: String); overload;
-    constructor Create(const ValueName: String; FaultingObject: TObject; const FaultingFunction: String); overload;
+    constructor Create(const Msg,ValueName: String; Value: Variant; FaultObject: TObject; const FaultFunction: String); overload;
+    constructor Create(const Msg,ValueName: String; FaultObject: TObject; const FaultFunction: String); overload;
+    constructor Create(const ValueName: String; Value: Variant; FaultObject: TObject; const FaultFunction: String); overload;
+    constructor Create(const ValueName: String; FaultObject: TObject; const FaultFunction: String); overload;
     property ValueName: String read FValueName;
     property Value: Variant read fValue;
   end;
 
-  EValueInvalidException = class(EValueException)
+  EValueInvalid = class(EValueException)
   protected
     class Function GetDefaultMessage(ValueString: Boolean): String; override;
   end;
 
-  EValueInvalidNameOnlyException = class(EValueException)
+  EValueInvalidNameOnly = class(EValueException)
   protected
     class Function GetDefaultMessage(ValueString: Boolean): String; override;
   end;
@@ -172,7 +170,7 @@ end;
 
 //==============================================================================
 
-constructor EGeneralException.CreateFmt(const Msg: String; Args: array of const; FaultingObject: TObject; const FaultingFunction: String);
+constructor EGeneralException.CreateFmt(const Msg: String; Args: array of const; FaultObject: TObject; const FaultFunction: String);
 
   Function InstanceString(Obj: TObject): String;
   begin
@@ -181,11 +179,11 @@ constructor EGeneralException.CreateFmt(const Msg: String; Args: array of const;
   
 begin
 inherited CreateFmt(Msg,Args);
-If Assigned(FaultingObject) then
-  fFaultingObject := InstanceString(FaultingObject)
+If Assigned(FaultObject) then
+  fFaultingObject := InstanceString(FaultObject)
 else
   fFaultingObject := '';
-fFaultingFunction := FaultingFunction;
+fFaultingFunction := FaultFunction;
 If Length(fFaultingObject) > 0 then
   begin
     If Length(fFaultingFunction) > 0 then
@@ -195,7 +193,7 @@ If Length(fFaultingObject) > 0 then
   end
 else
   begin
-    If Length(FaultingFunction) > 0 then
+    If Length(fFaultingFunction) > 0 then
       fFullMessage := Format(Format('%s: %s',[fFaultingFunction,Msg]),Args)
     else
       fFullMessage := Format(Msg,Args);
@@ -204,22 +202,22 @@ end;
 
 //------------------------------------------------------------------------------
 
-constructor EGeneralException.Create(const Msg: String; FaultingObject: TObject; const FaultingFunction: String);
+constructor EGeneralException.Create(const Msg: String; FaultObject: TObject; const FaultFunction: String);
 begin
-CreateFmt(Msg,[],FaultingObject,FaultingFunction);
+CreateFmt(Msg,[],FaultObject,FaultFunction);
 end;
 
 //==============================================================================
 
-constructor ESystemError.Create(FullSysMsg: Boolean; FaultingObject: TObject; const FaultingFunction: String);
+constructor ESystemError.Create(FullSysMsg: Boolean; FaultObject: TObject; const FaultFunction: String);
 var
   ErrCode:  UInt32;
 begin
 ErrCode := GetLastError;
 If FullSysMsg then
-  inherited CreateFmt('System error 0x%.8x: %s',[ErrCode,SysErrorMessage(ErrCode)],FaultingObject,FaultingFunction)
+  inherited CreateFmt('System error 0x%.8x: %s',[ErrCode,SysErrorMessage(ErrCode)],FaultObject,FaultFunction)
 else
-  inherited CreateFmt('System error occured (0x%.8x).',[ErrCode],FaultingObject,FaultingFunction);
+  inherited CreateFmt('System error occured (0x%.8x).',[ErrCode],FaultObject,FaultFunction);
 fErrorCode := ErrCode;
 end;
 
@@ -232,17 +230,17 @@ end;
 
 //------------------------------------------------------------------------------
 
-constructor EIndexException.Create(const Msg: String; Index: Integer; FaultingObject: TObject; const FaultingFunction: String);
+constructor EIndexException.Create(const Msg: String; Index: Integer; FaultObject: TObject; const FaultFunction: String);
 begin
-inherited CreateFmt(Msg,[Index],FaultingObject,FaultingFunction);
+inherited CreateFmt(Msg,[Index],FaultObject,FaultFunction);
 fIndex := Index;
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-constructor EIndexException.Create(Index: Integer; FaultingObject: TObject; const FaultingFunction: String);
+constructor EIndexException.Create(Index: Integer; FaultObject: TObject; const FaultFunction: String);
 begin
-Create(GetDefaultMessage,Index,FaultingObject,FaultingFunction);
+Create(GetDefaultMessage,Index,FaultObject,FaultFunction);
 end;
 
 //==============================================================================
@@ -322,39 +320,39 @@ end;
 
 //------------------------------------------------------------------------------
 
-constructor EValueException.Create(const Msg,ValueName: String; Value: Variant; FaultingObject: TObject; const FaultingFunction: String);
+constructor EValueException.Create(const Msg,ValueName: String; Value: Variant; FaultObject: TObject; const FaultFunction: String);
 begin
 If (VarType(Value) and varArray) <> 0 then
-  inherited CreateFmt(Msg,[ValueName,VariantArrayToStr(Value)],FaultingObject,FaultingFunction)
+  inherited CreateFmt(Msg,[ValueName,VariantArrayToStr(Value)],FaultObject,FaultFunction)
 else
-  inherited CreateFmt(Msg,[ValueName,VarToStrDef(Value,'ERROR')],FaultingObject,FaultingFunction);
+  inherited CreateFmt(Msg,[ValueName,VarToStrDef(Value,'ERROR')],FaultObject,FaultFunction);
 fValue := Value;
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-constructor EValueException.Create(const Msg,ValueName: String; FaultingObject: TObject; const FaultingFunction: String);
+constructor EValueException.Create(const Msg,ValueName: String; FaultObject: TObject; const FaultFunction: String);
 begin
-inherited CreateFmt(Msg,[ValueName],FaultingObject,FaultingFunction);
+inherited CreateFmt(Msg,[ValueName],FaultObject,FaultFunction);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-constructor EValueException.Create(const ValueName: String; Value: Variant; FaultingObject: TObject; const FaultingFunction: String);
+constructor EValueException.Create(const ValueName: String; Value: Variant; FaultObject: TObject; const FaultFunction: String);
 begin
-Create(GetDefaultMessage(True),ValueName,Value,FaultingObject,FaultingFunction);
+Create(GetDefaultMessage(True),ValueName,Value,FaultObject,FaultFunction);
 end;
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-constructor EValueException.Create(const ValueName: String; FaultingObject: TObject; const FaultingFunction: String);
+constructor EValueException.Create(const ValueName: String; FaultObject: TObject; const FaultFunction: String);
 begin
-Create(GetDefaultMessage(False),ValueName,FaultingObject,FaultingFunction);
+Create(GetDefaultMessage(False),ValueName,FaultObject,FaultFunction);
 end;
 
 //==============================================================================
 
-class Function EValueInvalidException.GetDefaultMessage(ValueString: Boolean): String;
+class Function EValueInvalid.GetDefaultMessage(ValueString: Boolean): String;
 begin
 If ValueString then
   Result := 'Invalid %s value (%s).'
@@ -364,7 +362,7 @@ end;
 
 //==============================================================================
 
-class Function EValueInvalidNameOnlyException.GetDefaultMessage(ValueString: Boolean): String;
+class Function EValueInvalidNameOnly.GetDefaultMessage(ValueString: Boolean): String;
 begin
 If ValueString then
   Result := 'Invalid %s (%s).'
