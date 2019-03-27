@@ -11,11 +11,20 @@
 
     Set of exception classes designed to simplify exception creation in
     specific situations (eg. index out of bounds, invalid variable value,
-    sytem error, ...).
+    system error, ...).
 
-  ©František Milt 2019-01-05
+  ©František Milt 2019-03-27
 
-  Version 0.9 (under developent)
+  Version 0.9.1 (under development)
+  
+  Contacts:
+    František Milt: frantisek.milt@gmail.com
+
+  Support:
+    If you find this code useful, please consider supporting the author by
+    making a small donation using following link(s):
+
+      https://www.paypal.me/FMilt
 
   Dependencies:
     AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
@@ -41,12 +50,11 @@ unit AuxExceptions;
 
 {$IF Defined(WINDOWS) or Defined(MSWINDOWS)}
   {$DEFINE Windows}
+{$ELSEIF Defined(LINUX)}
+  // when compiled for linux, some of the features might not be available atm.
+  {$DEFINE Linux}
 {$ELSE}
-  // for now unsupported, will try to add support for linux later
   {$MESSAGE FATAL 'Unsupported operating system.'}
-  //{$IF not (Defined(UNIX) or Defined(POSIX))}
-  //  {$MESSAGE FATAL 'Unsupported operating system.'}
-  //{$IFEND}
 {$IFEND}
 
 {$IFDEF FPC}
@@ -75,8 +83,7 @@ unit AuxExceptions;
 interface
 
 uses
-  Windows, SysUtils,
-  AuxTypes;
+  {$IFDEF Windows}Windows{$ELSE}baseunix, pthreads{$ENDIF}, SysUtils;
 
 {===============================================================================
 --------------------------------------------------------------------------------
@@ -85,7 +92,8 @@ uses
 ===============================================================================}
 
 type
-  TThreadID = DWORD;
+  TAEThreadID = {$IFDEF Windows}DWORD{$ELSE}pthread_t{$ENDIF};
+  TAESysErrCode = {$IFDEF Windows}DWORD{$ELSE}cint{$ENDIF};
 
 {===============================================================================
     ECustomException - class declaration
@@ -94,11 +102,11 @@ type
   ECustomException = class(Exception)
   protected
     fTime:      TDateTime;
-    fThreadID:  TThreadID;
+    fThreadID:  TAEThreadID;
   public
     constructor CreateFmt(const Msg: String; Args: array of const);
     property Time: TDateTime read fTime;
-    property ThreadID: TThreadID read fThreadID;
+    property ThreadID: TAEThreadID read fThreadID;
   end;
 
 {$IFDEF ExtendedException}
@@ -138,10 +146,10 @@ type
 
   ESystemError = class(EGeneralException)
   private
-    fErrorCode: UInt32;
+    fErrorCode: TAESysErrCode;
   public
     constructor Create(FullSysMsg: Boolean; FaultObject: TObject; const FaultFunction: String); overload;
-    property ErrorCode: UInt32 read fErrorCode;
+    property ErrorCode: TAESysErrCode read fErrorCode;
   end;
 
 {===============================================================================
@@ -262,7 +270,11 @@ constructor ECustomException.CreateFmt(const Msg: String; Args: array of const);
 begin
 inherited CreateFmt(Msg,Args);
 fTime := Now;
-fThreadID := GetCurrentThreadID;
+{$IFDEF Windows}
+fThreadID := Windows.GetCurrentThreadID;
+{$ELSE}
+fThreadID := pthreads.pthread_self;
+{$ENDIF}
 end;
 
 {===============================================================================
@@ -319,9 +331,13 @@ end;
 
 constructor ESystemError.Create(FullSysMsg: Boolean; FaultObject: TObject; const FaultFunction: String);
 var
-  ErrCode:  UInt32;
+  ErrCode:  TAESysErrCode;
 begin
+{$IFDEF Windows}
 ErrCode := GetLastError;
+{$ELSE}
+ErrCode := errno;
+{$ENDIF}
 If FullSysMsg then
   inherited CreateFmt('System error 0x%.8x: %s',[ErrCode,SysErrorMessage(ErrCode)],FaultObject,FaultFunction)
 else
