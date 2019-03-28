@@ -30,11 +30,74 @@
     AuxTypes - github.com/ncs-sniper/Lib.AuxTypes
 
 ===============================================================================}
-unit AuxExceptions;
+(*******************************************************************************
+--------------------------------------------------------------------------------
+  Inclusion template
+--------------------------------------------------------------------------------
 
-{$IF defined(CPU64) or defined(CPU64BITS)}
+unit <unit_name>;
+
+{$DEFINE AE_Included}
+
+{$DEFINE AE_Include_Defines}
+{$INCLUDE '..\Dev\AuxExceptions.pas'}
+{$UNDEF AE_Include_Defines}
+
+{$DEFINE AE_Include_Defines_Auto}
+{$INCLUDE '..\Dev\AuxExceptions.pas'}
+{$UNDEF AE_Include_Defines_Auto}
+
+interface
+
+{$DEFINE AE_Include_Interface_Uses}
+uses
+  {$INCLUDE '..\Dev\AuxExceptions.pas'};
+{$UNDEF AE_Include_Interface_Uses}
+
+type
+  E<prefix>BaseException = class(Exception);
+
+  EBaseException = EIBaseException;
+
+{$DEFINE AE_Include_Interface}
+{$INCLUDE '..\Dev\AuxExceptions.pas'}
+{$UNDEF AE_Include_Interface}
+
+type
+  E<prefix>GeneralException     = EGeneralException;
+  E<prefix>SystemError          = ESystemError;
+  E<prefix>IndexException       = EIndexException;
+  E<prefix>IndexOutOfBounds     = EIndexOutOfBounds;
+  E<prefix>IndexTooLow          = EIndexTooLow;
+  E<prefix>IndexTooHigh         = EIndexTooHigh;
+  E<prefix>IndexInvalid         = EIndexInvalid;
+  E<prefix>ValueException       = EValueException;
+  E<prefix>ValueInvalid         = EValueInvalid;
+  E<prefix>ValueInvalidNameOnly = EValueInvalidNameOnly;
+
+implementation
+
+{$DEFINE AE_Include_Implementation_Uses}
+uses
+  {$INCLUDE '..\Dev\AuxExceptions.pas'};
+{$UNDEF AE_Include_Implementation_Uses}
+
+{$DEFINE AE_Include_Implementation}
+{$INCLUDE '..\Dev\AuxExceptions.pas'}
+{$UNDEF AE_Include_Implementation}
+
+end.
+
+*******************************************************************************)
+{$IFNDEF AE_Included}
+unit AuxExceptions;
+{$ENDIF AE_Included}
+
+{$IF Defined(AE_Include_Defines) or not Defined(AE_Included)}
+
+{$IF Defined(CPU64) or Defined(CPU64BITS)}
   {$DEFINE 64bit}
-{$ELSEIF defined(CPU16)}
+{$ELSEIF Defined(CPU16)}
   {$DEFINE 16bit}
 {$ELSE}
   {$DEFINE 32bit}
@@ -73,6 +136,10 @@ unit AuxExceptions;
 }
 {$DEFINE EnableExtendedException}
 
+{$IFEND}  // defines block end
+
+{$IF Defined(AE_Include_Defines_Auto) or not Defined(AE_Included)}
+
 // do not touch following...
 {$IF not Defined(PurePascal) and Defined(EnableExtendedException)}
   {$DEFINE ExtendedException}
@@ -80,11 +147,26 @@ unit AuxExceptions;
   {$UNDEF ExtendedException}
 {$IFEND}
 
+{$IFEND}  // auto defines block end
+
+{$IFNDEF AE_Included}
 interface
+{$ENDIF AE_Included}
 
+{$IFNDEF AE_Included}
 uses
-  {$IFDEF Windows}Windows{$ELSE}baseunix, pthreads{$ENDIF}, SysUtils;
+{$ENDIF AE_Included}
+{$IF Defined(AE_Include_Interface_Uses) or not Defined(AE_Included)}
+  {$IFDEF Windows}Windows{$ELSE}baseunix, pthreads{$ENDIF}, SysUtils
+{$IFEND}  // interface uses block end
+{$IFNDEF AE_Included};{$ENDIF AE_Included}
 
+{$IFNDEF AE_Included}
+type
+  EBaseException = class(Exception);
+{$ENDIF AE_Included}
+
+{$IF Defined(AE_Include_Interface) or not Defined(AE_Included)}
 {===============================================================================
 --------------------------------------------------------------------------------
                              Base exception classes
@@ -99,7 +181,7 @@ type
     ECustomException - class declaration
 ===============================================================================}
 
-  ECustomException = class(Exception)
+  ECustomException = class(EBaseException)
   protected
     fTime:      TDateTime;
     fThreadID:  TAEThreadID;
@@ -114,10 +196,12 @@ type
     EExtendedException - class declaration
 ===============================================================================}
   EExtendedException = class(ECustomException);  // later implement
+{$ENDIF ExtendedException}
 
 {===============================================================================
     EGeneralException - class declaration
 ===============================================================================}
+{$IFDEF ExtendedException}
   EGeneralException = class(EExtendedException)
 {$ELSE ExtendedException}
   EGeneralException = class(ECustomException)
@@ -251,11 +335,21 @@ type
     class Function GetDefaultMessage(ValueString: Boolean): String; override;
   end;
 
+{$IFEND}  // interface block end
+
+{$IFNDEF AE_Included}
 implementation
+{$ENDIF AE_Included}
 
+{$IFNDEF AE_Included}
 uses
-  Variants;
+{$ENDIF AE_Included}
+{$IF Defined(AE_Include_Implementation_Uses) or not Defined(AE_Included)}
+  Variants
+{$IFEND}  // implementation uses block end
+{$IFNDEF AE_Included};{$ENDIF AE_Included}
 
+{$IF Defined(AE_Include_Implementation) or not Defined(AE_Included)}
 {===============================================================================
 --------------------------------------------------------------------------------
                              Base exception classes
@@ -536,5 +630,9 @@ else
   Result := 'Invalid %s.';
 end;
 
+{$IFEND}  // implementation block end
 
+{$IFNDEF AE_Included}
+{$WARNINGS OFF}
 end.
+{$ENDIF AE_Included}
