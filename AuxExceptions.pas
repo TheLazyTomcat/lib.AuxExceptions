@@ -157,7 +157,7 @@ interface
 uses
 {$ENDIF AE_Included}
 {$IF Defined(AE_Include_Interface_Uses) or not Defined(AE_Included)}
-  {$IFDEF Windows}Windows{$ELSE}baseunix, pthreads{$ENDIF}, SysUtils
+  {$IFDEF Windows}Windows{$ELSE}baseunix, pthreads{$ENDIF}, SysUtils, AuxTypes
 {$IFEND}  // interface uses block end
 {$IFNDEF AE_Included};{$ENDIF AE_Included}
 
@@ -193,9 +193,142 @@ type
 
 {$IFDEF ExtendedException}
 {===============================================================================
+    EExtendedException - internal types
+===============================================================================}
+
+type
+  TNativeRegister = PtrUInt;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+  TGeneralPurposeRegister = packed record
+    case Integer of
+      0:  (LoByte:  UInt8;
+           HiByte:  UInt8);
+      1:  (Word:    UInt16);
+      2:  (Long:    UInt32);
+    {$IFDEF x64}
+      3:  (Quad:    UInt64);
+    {$ENDIF}
+      4:  (Native:  TNativeRegister)
+  end;
+
+  TGeneralPurposeRegisters = packed record
+    case Integer of
+      0:  (A,B,C,D,SI,DI,BP,SP:           TGeneralPurposeRegister;
+        {$IFDEF x64}
+           R8,R9,R10,R11,R12,R13,R14,R15: TGeneralPurposeRegister;
+        {$ENDIF});
+      1:  (R0,R1,R2,R3,R4,R5,R6,R7:       TGeneralPurposeRegister;
+        {$IFDEF x64}
+           R8,R9,R10,R11,R12,R13,R14,R15: TGeneralPurposeRegister;
+        {$ENDIF});
+      2:  (Regs:  array[0..{$IFDEF x64}15{$ELSE}7{$ENDIF}] of TGeneralPurposeRegister);
+  end;
+
+  TSegmentRegisters = packed record
+    case Integer of
+      0:  (CS,DS,SS,ES,FS,GS: UInt16);
+      1:  (Regs:              packed array[0..5] of UInt16);
+  end;
+
+  TBasicRegisters = record
+    GeneralPurpose:     TGeneralPurposeRegisters;
+    Segment:            TSegmentRegisters;
+    Flags:              TNativeRegister;
+    InstructionPointer: TNativeRegister;
+  end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+  TFloatRegister = record
+    Float80:  Float80;
+    Float64:  Float64;
+    Float32:  Float32;
+  end;
+
+  TFloatRegisters = record
+    Data:                       array[0..7] of TFloatRegister;
+    Control,Status,TagWord:     UInt16;
+    LastInstructionPointerSel:  UInt16; // selector
+    LastInstructionPointerOff:  UInt32; // offset
+    LastDataPointerSel:         UInt16; // selector
+    LastDataPointerOff:         UInt32; // offset
+    OpCode:                     UInt16; // only lower 11 bits are walid
+  end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+  TIntegerVectorRegister = packed record
+    case Integer of
+      0:  (Vec_8b:  packed array[0..7] of UInt8);
+      1:  (Vec_16b: packed array[0..3] of UInt16);
+      2:  (Vec_32b: packed array[0..1] of UInt32);
+      3:  (Vec_64b: UInt64);
+  end;
+
+  TIntegerVectorRegisters = packed record
+    MM: packed array[0..7] of TIntegerVectorRegister;
+  end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+  TFloatVectorRegister = packed record
+    case Integer of
+      0:  (Vec_32b: packed array[0..15] of Float32);
+      1:  (Vec_64b: packed array[0..7] of Float64);
+      2:  (XMM_32b: packed array[0..3] of Float32);
+      3:  (XMM_64b: packed array[0..1] of Float64);
+      4:  (YMM_32b: packed array[0..7] of Float32);
+      5:  (YMM_64b: packed array[0..3] of Float64);
+      6:  (ZMM_32b: packed array[0..15] of Float32);
+      7:  (ZMM_64b: packed array[0..7] of Float64)
+  end;
+
+  TFloatVectorRegisters = record
+    Length: Integer;                // number of valid 32bit floats in each register
+    Count:  Integer;                // number of valid register
+    Regs:   array[0..31] of TFloatVectorRegister;
+    MXCSR:  UInt32;
+    OPMask: array[0..7] of UInt64;  // K0-K7 registers
+  end;
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+  TPresentRegister = (
+    prBasic,  // general purpose, flags, segment and instruction pointer registers
+    prFPU,    // x87 FPU registers (ST0-ST7, control, status, ...)
+    prMMX,    // MMX registers (MM0-MM7)
+    prSSE,    // SSE-SSE4.x registers (XMM0-XMM7/15)
+    prAVX,    // AVX and AVX2 registers (YMM0-YMM7/15)
+    prAVX512  // AVX-512 registers (ZMM0-ZMM7/31, K0-K7)
+  );
+
+  TPresentRegisters = set of TPresentRegister;
+
+  TRegisters = record
+    PresentRegs:    TPresentRegisters;
+    Basic:          TBasicRegisters;
+    Float:          TFloatRegisters;          // x87 FPU
+    IntegerVector:  TIntegerVectorRegisters;  // MMX
+    FloatVector:    TFloatVectorRegisters;    // SSE, AVX
+  end;
+
+{===============================================================================
     EExtendedException - class declaration
 ===============================================================================}
-  EExtendedException = class(ECustomException);  // later implement
+
+type
+  EExtendedException = class(ECustomException)
+  private
+    fRegisters: TRegisters;
+  protected
+    procedure GetFloatRegister; virtual;
+  public
+    constructor CreateFmt(const Msg: String; Args: array of const);
+    property Registers: TRegisters read fRegisters; 
+  end;
+
 {$ENDIF ExtendedException}
 
 {===============================================================================
@@ -346,6 +479,9 @@ uses
 {$ENDIF AE_Included}
 {$IF Defined(AE_Include_Implementation_Uses) or not Defined(AE_Included)}
   Variants
+{$IFDEF ExtendedException}
+  , SimpleCPUID
+{$ENDIF ExtendedException}
 {$IFEND}  // implementation uses block end
 {$IFNDEF AE_Included};{$ENDIF AE_Included}
 
@@ -412,6 +548,224 @@ begin
 CreateFmt(Msg,[],FaultObject,FaultFunction);
 end;
 
+{$IFDEF ExtendedException}
+{===============================================================================
+    EExtendedException - class implementation
+===============================================================================}
+
+{-------------------------------------------------------------------------------
+    EExtendedException - auxiliary routines
+-------------------------------------------------------------------------------}
+
+{$IFOPT W+}
+  {$DEFINE StackFramesEnabled}
+{$ELSE}
+  {$UNDEF StackFramesEnabled}
+{$ENDIF}
+
+{$STACKFRAMES OFF}
+
+Function GetInstructionPointer: Pointer; assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IF Defined(x64)}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+    MOV   qword ptr RAX, [RSP]
+{$ELSEIF Defined(x86)}
+    MOV   dword ptr EAX, [ESP]
+{$ELSE}
+  {$MESSAGE FATAL 'Unsupported architecture.'}
+{$IFEND}
+end;
+
+//------------------------------------------------------------------------------
+
+procedure GetGeneralPurposeRegisters(Mem: Pointer); assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IF Defined(x64)}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+    MOV   qword ptr [Mem + 00], RAX
+    MOV   qword ptr [Mem + 08], RBX
+    MOV   qword ptr [Mem + 16], RCX
+    MOV   qword ptr [Mem + 24], RDX
+    MOV   qword ptr [Mem + 32], RSI
+    MOV   qword ptr [Mem + 40], RDI
+    MOV   qword ptr [Mem + 48], RBP
+    MOV   qword ptr [Mem + 56], RSP
+{$ELSEIF Defined(x86)}
+    MOV   dword ptr [Mem + 00], EAX
+    MOV   dword ptr [Mem + 04], EBX
+    MOV   dword ptr [Mem + 08], ECX
+    MOV   dword ptr [Mem + 12], EDX
+    MOV   dword ptr [Mem + 16], ESI
+    MOV   dword ptr [Mem + 20], EDI
+    MOV   dword ptr [Mem + 24], EBP
+    MOV   dword ptr [Mem + 28], ESP
+{$ELSE}
+  {$MESSAGE FATAL 'Unsupported architecture.'}
+{$IFEND}
+end;
+
+//------------------------------------------------------------------------------
+
+Function GetFLAGSRegister: PtrUInt; assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IF Defined(x64)}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+    PUSHFQ
+    MOV   RAX, qword ptr [RSP]
+    ADD   RSP, 8
+{$ELSEIF Defined(x86)}
+    PUSHFD
+    MOV   EAX, dword ptr [ESP]
+    ADD   ESP, 4
+{$ELSE}
+  {$MESSAGE FATAL 'Unsupported architecture.'}
+{$IFEND}
+end;
+
+//------------------------------------------------------------------------------
+
+//CS,DS,SS,ES,FS,GS
+procedure GetSegmentRegisters(Mem: Pointer); assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IF Defined(x64)}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+{$ELSEIF not Defined(x86)}
+  {$MESSAGE FATAL 'Unsupported architecture.'}
+{$IFEND}
+    MOV   word ptr [Mem + 00],  CS
+    MOV   word ptr [Mem + 02],  DS
+    MOV   word ptr [Mem + 04],  SS
+    MOV   word ptr [Mem + 06],  ES
+    MOV   word ptr [Mem + 08],  FS
+    MOV   word ptr [Mem + 10],  GS
+end;
+
+//------------------------------------------------------------------------------
+
+procedure Getx87Registers(Mem: Pointer); assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IF Defined(x64)}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+{$ELSEIF not Defined(x86)}
+  {$MESSAGE FATAL 'Unsupported architecture.'}
+{$IFEND}
+    FSTENV  [Mem]
+end;
+
+//------------------------------------------------------------------------------
+
+procedure Float80toFloat64(F80,F64: Pointer); assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IF Defined(x64)}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+{$ELSEIF not Defined(x86)}
+  {$MESSAGE FATAL 'Unsupported architecture.'}
+{$IFEND}
+    FLD     tbyte ptr [F80]
+    FSTP    qword ptr [F64]
+    FWAIT
+end;
+
+//------------------------------------------------------------------------------
+
+procedure GetMMXRegisters(Mem: Pointer); assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IF Defined(x64)}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+{$ELSEIF not Defined(x86)}
+  {$MESSAGE FATAL 'Unsupported architecture.'}
+{$IFEND}
+    MOVQ  qword ptr [Mem + 00], MM0
+    MOVQ  qword ptr [Mem + 08], MM1
+    MOVQ  qword ptr [Mem + 16], MM2
+    MOVQ  qword ptr [Mem + 24], MM3
+    MOVQ  qword ptr [Mem + 32], MM4
+    MOVQ  qword ptr [Mem + 40], MM5
+    MOVQ  qword ptr [Mem + 48], MM6
+    MOVQ  qword ptr [Mem + 56], MM7
+end;
+
+{$IFDEF StackFramesEnabled}
+  {$STACKFRAMES ON}
+{$ENDIF}
+
+{-------------------------------------------------------------------------------
+    EExtendedException - protected methods
+-------------------------------------------------------------------------------}
+
+procedure EExtendedException.GetFloatRegister;
+var
+  FPUData: packed record
+    CW,pad0:  UInt16;   // control word
+    SW,pad1:  UInt16;   // status word
+    TW,pad2:  UInt16;   // tag word
+    FIP:      UInt32;   // FPU Instruction Pointer Offset
+    FCS:      UInt16;   // FPU Instruction Pointer Selector
+    OpCode:   UInt16;   // only lower 10 bits used
+    FDP:      UInt32;   // FPU Data Pointer Offset
+    FDS,pad3: UInt16;   // FPU Data Pointer Selector
+    Stack:    packed array[0..7] of Float80;
+  end;
+  i:  Integer;
+begin
+Getx87Registers(@FPUData);
+// parse the obtained data
+For i := Low(FPUData.Stack) to High(FPUData.Stack) do
+  begin
+    Move(FPUData.Stack[i],fRegisters.Float.Data[i].Float80,SizeOf(Float80));
+    Float80toFloat64(Addr(fRegisters.Float.Data[i].Float80),Addr(fRegisters.Float.Data[i].Float64));
+    fRegisters.Float.Data[i].Float32 := fRegisters.Float.Data[i].Float64;
+  end;
+fRegisters.Float.Control := FPUData.CW;
+fRegisters.Float.Status := FPUData.SW;
+fRegisters.Float.TagWord := FPUData.TW;
+fRegisters.Float.LastInstructionPointerSel := FPUData.FCS;
+fRegisters.Float.LastInstructionPointerOff := FPUData.FIP;
+fRegisters.Float.LastDataPointerSel := FPUData.FDS;
+fRegisters.Float.LastDataPointerOff := FPUData.FDP;
+fRegisters.Float.OpCode := FPUData.OpCode and $07FF;
+end;
+
+{-------------------------------------------------------------------------------
+    EExtendedException - public methods
+-------------------------------------------------------------------------------}
+
+(*
+    prSSE,    // SSE-SSE4.x registers (XMM0-XMM7/15)
+    prAVX,    // AVX and AVX2 registers (YMM0-YMM7/15)
+    prAVX512  // AVX-512 registers (ZMM0-ZMM7/31, K0-K7)
+*)
+constructor EExtendedException.CreateFmt(const Msg: String; Args: array of const);
+begin                  
+inherited CreateFmt(Msg,Args);
+FillChar(fRegisters,SizeOf(TRegisters),0);
+// get basic registers (I know they are now polluted by arguments and other things, but to be complete)
+fRegisters.Basic.InstructionPointer := TNativeRegister(GetInstructionPointer);
+GetGeneralPurposeRegisters(Addr(fRegisters.Basic.GeneralPurpose));
+fRegisters.Basic.Flags := GetFLAGSRegister;
+GetSegmentRegisters(Addr(fRegisters.Basic.Segment));
+Include(fRegisters.PresentRegs,prBasic);
+with TSimpleCPUID.Create do
+try
+  If Info.SupportedExtensions.X87 then
+    begin
+      // get FPU registers
+      GetFloatRegister;
+      Include(fRegisters.PresentRegs,prFPU);
+    end;
+  If Info.SupportedExtensions.MMX then
+    begin
+      // get MMX registers
+      GetMMXRegisters(Addr(fRegisters.IntegerVector.MM));
+      Include(fRegisters.PresentRegs,prMMX);
+    end;
+finally
+  Free;
+end;
+end;
+
+{$ENDIF ExtendedException}
 
 {===============================================================================
 --------------------------------------------------------------------------------
