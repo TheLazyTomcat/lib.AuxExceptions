@@ -1,13 +1,42 @@
 {$IFDEF AE_Include_Defs}
 
+{$IF Defined(CPUX86_64) or Defined(CPUX64)}
+  {$DEFINE x64}
+{$ELSEIF Defined(CPU386)}
+  {$DEFINE x86}
+{$ELSE}
+  {$DEFINE PurePascal}
+{$IFEND}
+
 {$IF Defined(WINDOWS) or Defined(MSWINDOWS)}
   {$DEFINE Windows}
+{$ELSEIF Defined(LINUX)}
+  {$DEFINE Linux}
+{$ELSE}
+  {$MESSAGE FATAL 'Unsupported operating system.'}
 {$IFEND}
 
 {$IFDEF FPC}
   {$MODE ObjFPC}
+  {$IFNDEF PurePascal}
+    {$ASMMODE Intel}
+  {$ENDIF}
+  {$DEFINE FPC_DisableWarns}
+  {$MACRO ON}
 {$ENDIF}
 {$H+}
+
+{$IF not Defined(PurePascal) and Defined(AllowExtendedException)}
+  {$DEFINE ExtendedException}
+{$ELSE}
+  {$UNDEF ExtendedException}
+{$IFEND}
+
+{$IFOPT W+}
+  {$DEFINE AE_StackFramesEnabled}
+{$ELSE}
+  {$UNDEF AE_StackFramesEnabled}
+{$ENDIF}
 
 {$ENDIF AE_Include_Defs}
 
@@ -17,7 +46,8 @@
 
 {$IFDEF AE_Include_Interface_Uses}
 uses
-  SysUtils {$IFDEF Windows}, Windows{$ENDIF};
+  SysUtils, {$IFDEF Windows}Windows{$ELSE}baseunix{$ENDIF},
+  AuxTypes;
 
 {$ENDIF AE_Include_Interface_Uses}
 
@@ -52,27 +82,160 @@ type
     property ThreadID: TAEThreadID read fThreadID;
   end;
 
-
+{$IFDEF ExtendedException}
 {===============================================================================
 --------------------------------------------------------------------------------
                                EAEExtendedException
 --------------------------------------------------------------------------------
 ===============================================================================}
 {===============================================================================
+    EAEExtendedException - public storage types
+===============================================================================}
+type
+  TAENativeRegister = PtrUInt;
+
+const
+  AE_GPR_HIGH = {$IFDEF x64}15{$ELSE}7{$ENDIF}; // highest general purpose register
+
+//------------------------------------------------------------------------------
+type
+  TAEGeneralPurposeRegister = packed record
+    case Integer of
+      0:  (LoByte:  UInt8;
+           HiByte:  UInt8);
+      1:  (Word:    UInt16);
+      2:  (Long:    UInt32);
+    {$IFDEF x64}
+      3:  (Quad:    UInt64);
+    {$ENDIF}
+      4:  (Native:  TAENativeRegister)
+  end;
+
+  TAEGeneralPurposeRegisters = packed record
+    case Integer of
+      0:  (A,B,C,D,SI,DI,BP,SP:           TAEGeneralPurposeRegister);
+      1:  (R0,R1,R2,R3,R4,R5,R6,R7:       TAEGeneralPurposeRegister;
+        {$IFDEF x64}
+           R8,R9,R10,R11,R12,R13,R14,R15: TAEGeneralPurposeRegister;
+        {$ENDIF});
+      2:  (Regs:  array[0..AE_GPR_HIGH] of TAEGeneralPurposeRegister);
+  end;
+
+  TAESegmentRegisters = packed record
+    case Integer of
+      0:  (CS,DS,SS,ES,FS,GS: UInt16);
+      1:  (Regs:              packed array[0..5] of UInt16);
+  end;
+
+  TAEBasicRegisters = record
+    GeneralPurpose:     TAEGeneralPurposeRegisters;
+    Segment:            TAESegmentRegisters;
+    Flags:              TAENativeRegister;
+    InstructionPointer: TAENativeRegister;
+  end;
+
+//------------------------------------------------------------------------------
+type
+  TAEFloatRegister = packed record
+    case Integer of
+      0:  (Mantissa:      UInt64;
+           SignExponent:  UInt16);
+      1:  (Float80:       Float80;
+           Float64:       Float64;
+           Float32:       Float32);
+  end;
+
+  TAEFloatRegisters = record
+    Stack:                          array[0..7] of TAEFloatRegister;
+    ControlWord,StatusWord,TagWord: UInt16;
+    LastInstructionPointerSelector: UInt16;
+    LastInstructionPointerOffset:   UInt32;
+    LastDataPointerSelector:        UInt16;
+    LastDataPointerOffset:          UInt32;
+    OpCode:                         UInt16; // only lower 11 bits are walid
+  end;
+
+//------------------------------------------------------------------------------
+type
+  TAEIntegerVectorRegister = packed record
+    case Integer of
+      0:  (VecByte: packed array[0..7] of UInt8);
+      1:  (VecWord: packed array[0..3] of UInt16);
+      2:  (VecLong: packed array[0..1] of UInt32);
+      3:  (VecQuad: UInt64);
+  end;
+
+  TAEIntegerVectorRegisters = packed record
+    MM: packed array[0..7] of TAEIntegerVectorRegister;
+  end;
+
+//------------------------------------------------------------------------------
+type
+  TAEFloatVectorRegister = packed record
+    case Integer of
+      0:  (VecByte: packed array[0..63] of UInt8);
+      1:  (VecWord: packed array[0..31] of UInt16);
+      2:  (VecLong: packed array[0..15] of UInt32);
+      3:  (VecQuad: packed array[0..7] of UInt64);
+      4:  (XMMs: packed array[0..3] of Float32);
+      5:  (XMMd: packed array[0..1] of Float64);
+      6:  (YMMs: packed array[0..7] of Float32);
+      7:  (YMMd: packed array[0..3] of Float64);
+      8:  (ZMMs: packed array[0..15] of Float32);
+      9:  (ZMMd: packed array[0..7] of Float64)
+  end;
+
+  TAEFloatVectorRegisters = record
+    Length: Integer;    // number of valid 32bit floats in each register
+    Count:  Integer;    // number of valid registers (Regs array items)
+    Regs:   packed array[0..31] of TAEFloatVectorRegister;
+    MXCSR:  UInt32;
+    OPMask: packed array[0..7] of UInt64;  // K0-K7 registers
+  end;
+
+//------------------------------------------------------------------------------
+type
+  TAESystemRegisters = record
+    MachineStatusWord:  UInt16;
+  end;
+
+//------------------------------------------------------------------------------  
+type
+  TAEPresentRegister = (
+    prBasic,    // general purpose, flags, segment and instruction pointer registers
+    prFPU,      // x87 FPU registers (ST0-ST7, control word, status word, ...)
+    prMMX,      // MMX registers (MM0-MM7)
+    prSSE,      // SSE-SSE4.x registers (XMM0-XMM7/15)
+    prAVX,      // AVX and AVX2 registers (YMM0-YMM7/15)
+    prAVX512,   // AVX-512 registers (ZMM0-ZMM7/31, K0-K7)
+    prSystem    // MSW and similar
+  );
+
+  TAEPresentRegisters = set of TAEPresentRegister;
+
+  TAERegisters = record
+    PresentRegisters: TAEPresentRegisters;
+    Basic:            TAEBasicRegisters;
+    Float:            TAEFloatRegisters;          // x87 FPU
+    IntegerVector:    TAEIntegerVectorRegisters;  // MMX
+    FloatVector:      TAEFloatVectorRegisters;    // SSE, AVX
+    System:           TAESystemRegisters;
+  end;
+
+{===============================================================================
     EAEExtendedException - class declaration
 ===============================================================================}
 type
+{$message 'add msw reg, stacktrace, file(w), modules(w)'}
   EAEExtendedException = class(EAECustomException)
   protected
-    //fRegisters: TRegisters;
-    //procedure GetFloatRegisters; virtual;
-    //procedure GetFloatVectorRegisters_SSE; virtual;
-    //procedure GetFloatVectorRegisters_AVX; virtual;
-    //procedure GetFloatVectorRegisters_AVX512; virtual;
+    fRegisters: TAERegisters;
+    procedure InitRegisters; virtual;
   public
     constructor CreateFmt(const Msg: String; Args: array of const);
-    //property Registers: TRegisters read fRegisters;
+    property Registers: TAERegisters read fRegisters;
   end;
+{$ENDIF ExtendedException}
 
 {===============================================================================
 --------------------------------------------------------------------------------
@@ -245,23 +408,569 @@ type
     class Function GetDefaultMessage(ValueString: Boolean): String; override;
   end;
 
+{$IFDEF ExtendedException}
+{===============================================================================
+--------------------------------------------------------------------------------
+                                  RaiseSnapshot
+--------------------------------------------------------------------------------
+===============================================================================}
+{===============================================================================
+    RaiseSnapshot - declaration
+===============================================================================}
+
+Function RaiseSnapshot: Pointer; register; assembler;
+
+{$ENDIF}
+
 {$ENDIF AE_Include_Interface}
 
 {===============================================================================
 ********************************************************************************
 ===============================================================================}
 
+{$IFDEF FPC}{$WARN 2005 OFF}{$ENDIF}
 {$IFDEF AE_Include_Implementation_Uses}
 uses
-  Variants;
+  Variants{$IFDEF Windows}{$ELSE}, pthreads{$ENDIF}
+  {$IFDEF ExtendedException}, SimpleCPUID{$ENDIF};
+
+{$IFDEF FPC_DisableWarns}
+  {$DEFINE FPCDWM}
+  {$DEFINE W4055:={$WARN 4055 OFF}} // Conversion between ordinals and pointers is not portable
+  {$DEFINE W7102:={$WARN 7102 OFF}} // Use of +offset(%ebp) for parameters invalid here
+  {$DEFINE W7122:={$WARN 7122 OFF}} // Check size of memory operand "$1: memory-operand-size is $2 bits, but expected [$3 bits + $4 byte offset]"
+{$ENDIF}
 
 {$ENDIF AE_Include_Implementation_Uses}
+{$IFDEF FPC}{$WARN 2005 ON}{$ENDIF}
 
 {===============================================================================
 ********************************************************************************
 ===============================================================================}
 
 {$IFDEF AE_Include_Implementation}
+
+{$IFDEF ExtendedException}
+{===============================================================================
+--------------------------------------------------------------------------------
+                               Registers obtaining
+--------------------------------------------------------------------------------
+===============================================================================}
+{===============================================================================
+    Registers obtaining  - machine features word
+===============================================================================}
+const
+  AE_MACHINEFEATURES_FPU    = $00000001;
+  AE_MACHINEFEATURES_MMX    = $00000002;
+  AE_MACHINEFEATURES_SSE    = $00000004;
+  AE_MACHINEFEATURES_AVX    = $00000008;
+  AE_MACHINEFEATURES_AVX512 = $00000010;
+
+var
+  MachineFeaturesWord:  UInt32 = 0;
+
+{===============================================================================
+    Registers obtaining - thread-local storage
+===============================================================================}
+type
+  TAERegisterStorage = packed record
+    IP:           TAENativeRegister;
+    // RAX, RBX, RCX, RDX, RSI, RDI, RBP, RSP, R8, R9, R10, R11, R12, R13, R14, R15
+    GP:           packed array[0..AE_GPR_HIGH] of TAENativeRegister;
+    FLAGS:        TAENativeRegister;
+    // segment (CS, DS, SS, ES, FS, GS)
+    SG:           packed array[0..5] of UInt16;
+  {
+    x87 - following fields, starting with CW, correspond to protected-mode x87
+    FPU state memory image.
+  }
+    CW,fpad0:     UInt16;   // control word
+    SW,fpad1:     UInt16;   // status word
+    TW,fpad2:     UInt16;   // tag word
+    FIP:          UInt32;   // FPU Instruction Pointer Offset
+    FCS:          UInt16;   // FPU Instruction Pointer Selector
+    OpCode:       UInt16;   // only lower 10 bits used
+    FDP:          UInt32;   // FPU Data Pointer Offset
+    FDS,fpad3:    UInt16;   // FPU Data Pointer Selector
+    Stack:        packed array[0..7] of packed array[0..9] of UInt8;
+  {
+    MMX - the vectors can be obtained directly from x87 stack, but to be sure
+    they are loaded separately.
+  }
+    MM:           packed array[0..7] of UInt64;
+  {
+    SSE, AVX(2), AVX-512 - the storage is made large enough to accomodate all
+    possible data, but depending on machine features, only lower part of the
+    space might be actually used.
+  }
+    ZMM:          packed array[0..{$IFDEF x64}2047{$ELSE}511{$ENDIF}] of UInt8;
+    K:            packed array[0..7] of UInt64;
+    MXCSR:        UInt32;
+    // system registers
+    MSW:          UInt16; // machine status word
+  end;
+  PAERegisterStorage = ^TAERegisterStorage;
+
+threadvar
+  RaiseSnapshotStorage: PAERegisterStorage;
+
+{===============================================================================
+    Registers obtaining - internal functions
+===============================================================================}
+
+procedure GetX87Data(Storage: Pointer); register; assembler;
+asm
+    // get x87 state
+    FSAVE   [Storage] // this will initialize FPU...
+    FRSTOR  [Storage] // ...so we restore it again
+    FWAIT
+end;
+
+//------------------------------------------------------------------------------
+
+{$IFDEF FPCDWM}{$PUSH}W7122{$ENDIF}
+procedure GetMMXData(Storage: Pointer); register; assembler;
+asm
+    MOVQ    qword ptr [Storage], MM0
+    MOVQ    qword ptr [Storage + 8], MM1
+    MOVQ    qword ptr [Storage + 16], MM2
+    MOVQ    qword ptr [Storage + 24], MM3
+    MOVQ    qword ptr [Storage + 32], MM4
+    MOVQ    qword ptr [Storage + 40], MM5
+    MOVQ    qword ptr [Storage + 48], MM6
+    MOVQ    qword ptr [Storage + 65], MM7
+    EMMS
+end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
+
+//------------------------------------------------------------------------------
+
+procedure GetAVX512Data(Storage: Pointer); assembler; register;
+asm
+{$IFDEF x64}
+  {$IFDEF Windows}
+    // Win64
+    DB  $62, $f1, $7c, $48, $11, $01      // VMOVUPS zmmword ptr [RCX + 0000], ZMM0
+    DB  $62, $f1, $7c, $48, $11, $49, $01 // VMOVUPS zmmword ptr [RCX + 0064], ZMM1
+    DB  $62, $f1, $7c, $48, $11, $51, $02 // VMOVUPS zmmword ptr [RCX + 0128], ZMM2
+    DB  $62, $f1, $7c, $48, $11, $59, $03 // VMOVUPS zmmword ptr [RCX + 0192], ZMM3
+    DB  $62, $f1, $7c, $48, $11, $61, $04 // VMOVUPS zmmword ptr [RCX + 0256], ZMM4
+    DB  $62, $f1, $7c, $48, $11, $69, $05 // VMOVUPS zmmword ptr [RCX + 0320], ZMM5
+    DB  $62, $f1, $7c, $48, $11, $71, $06 // VMOVUPS zmmword ptr [RCX + 0384], ZMM6
+    DB  $62, $f1, $7c, $48, $11, $79, $07 // VMOVUPS zmmword ptr [RCX + 0448], ZMM7
+
+    DB  $62, $71, $7c, $48, $11, $41, $08 // VMOVUPS zmmword ptr [RCX + 0512], ZMM8
+    DB  $62, $71, $7c, $48, $11, $49, $09 // VMOVUPS zmmword ptr [RCX + 0576], ZMM9
+    DB  $62, $71, $7c, $48, $11, $51, $0a // VMOVUPS zmmword ptr [RCX + 0640], ZMM10
+    DB  $62, $71, $7c, $48, $11, $59, $0b // VMOVUPS zmmword ptr [RCX + 0704], ZMM11
+    DB  $62, $71, $7c, $48, $11, $61, $0c // VMOVUPS zmmword ptr [RCX + 0768], ZMM12
+    DB  $62, $71, $7c, $48, $11, $69, $0d // VMOVUPS zmmword ptr [RCX + 0832], ZMM13
+    DB  $62, $71, $7c, $48, $11, $71, $0e // VMOVUPS zmmword ptr [RCX + 0896], ZMM14
+    DB  $62, $71, $7c, $48, $11, $79, $0f // VMOVUPS zmmword ptr [RCX + 0960], ZMM15
+
+    DB  $62, $E1, $7C, $48, $11, $41, $10 // VMOVUPS zmmword ptr [RCX + 1024], ZMM16
+    DB  $62, $E1, $7C, $48, $11, $49, $11 // VMOVUPS zmmword ptr [RCX + 1088], ZMM17
+    DB  $62, $E1, $7C, $48, $11, $51, $12 // VMOVUPS zmmword ptr [RCX + 1152], ZMM18
+    DB  $62, $E1, $7C, $48, $11, $59, $13 // VMOVUPS zmmword ptr [RCX + 1216], ZMM19
+    DB  $62, $E1, $7C, $48, $11, $61, $14 // VMOVUPS zmmword ptr [RCX + 1280], ZMM20
+    DB  $62, $E1, $7C, $48, $11, $69, $15 // VMOVUPS zmmword ptr [RCX + 1344], ZMM21
+    DB  $62, $E1, $7C, $48, $11, $71, $16 // VMOVUPS zmmword ptr [RCX + 1408], ZMM22
+    DB  $62, $E1, $7C, $48, $11, $79, $17 // VMOVUPS zmmword ptr [RCX + 1472], ZMM23
+
+    DB  $62, $61, $7C, $48, $11, $41, $18 // VMOVUPS zmmword ptr [RCX + 1536], ZMM24
+    DB  $62, $61, $7C, $48, $11, $49, $19 // VMOVUPS zmmword ptr [RCX + 1600], ZMM25
+    DB  $62, $61, $7C, $48, $11, $51, $1A // VMOVUPS zmmword ptr [RCX + 1664], ZMM26
+    DB  $62, $61, $7C, $48, $11, $59, $1B // VMOVUPS zmmword ptr [RCX + 1728], ZMM27
+    DB  $62, $61, $7C, $48, $11, $61, $1C // VMOVUPS zmmword ptr [RCX + 1792], ZMM28
+    DB  $62, $61, $7C, $48, $11, $69, $1D // VMOVUPS zmmword ptr [RCX + 1856], ZMM29
+    DB  $62, $61, $7C, $48, $11, $71, $1E // VMOVUPS zmmword ptr [RCX + 1920], ZMM30
+    DB  $62, $61, $7C, $48, $11, $79, $1F // VMOVUPS zmmword ptr [RCX + 1984], ZMM31
+  {$ELSE}
+    // Lin64
+    DB  $62, $F1, $7C, $48, $11, $07      // VMOVUPS zmmword ptr [RDI + 0000], ZMM0
+    DB  $62, $F1, $7C, $48, $11, $4F, $01 // VMOVUPS zmmword ptr [RDI + 0064], ZMM1
+    DB  $62, $F1, $7C, $48, $11, $57, $02 // VMOVUPS zmmword ptr [RDI + 0128], ZMM2
+    DB  $62, $F1, $7C, $48, $11, $5F, $03 // VMOVUPS zmmword ptr [RDI + 0192], ZMM3
+    DB  $62, $F1, $7C, $48, $11, $67, $04 // VMOVUPS zmmword ptr [RDI + 0256], ZMM4
+    DB  $62, $F1, $7C, $48, $11, $6F, $05 // VMOVUPS zmmword ptr [RDI + 0320], ZMM5
+    DB  $62, $F1, $7C, $48, $11, $77, $06 // VMOVUPS zmmword ptr [RDI + 0384], ZMM6
+    DB  $62, $F1, $7C, $48, $11, $7F, $07 // VMOVUPS zmmword ptr [RDI + 0448], ZMM7
+
+    DB  $62, $71, $7C, $48, $11, $47, $08 // VMOVUPS zmmword ptr [RDI + 0512], ZMM8
+    DB  $62, $71, $7C, $48, $11, $4F, $09 // VMOVUPS zmmword ptr [RDI + 0576], ZMM9
+    DB  $62, $71, $7C, $48, $11, $57, $0A // VMOVUPS zmmword ptr [RDI + 0640], ZMM10
+    DB  $62, $71, $7C, $48, $11, $5F, $0B // VMOVUPS zmmword ptr [RDI + 0704], ZMM11
+    DB  $62, $71, $7C, $48, $11, $67, $0C // VMOVUPS zmmword ptr [RDI + 0768], ZMM12
+    DB  $62, $71, $7C, $48, $11, $6F, $0D // VMOVUPS zmmword ptr [RDI + 0832], ZMM13
+    DB  $62, $71, $7C, $48, $11, $77, $0E // VMOVUPS zmmword ptr [RDI + 0896], ZMM14
+    DB  $62, $71, $7C, $48, $11, $7F, $0F // VMOVUPS zmmword ptr [RDI + 0960], ZMM15
+
+    DB  $62, $E1, $7C, $48, $11, $47, $10 // VMOVUPS zmmword ptr [RDI + 1024], ZMM16
+    DB  $62, $E1, $7C, $48, $11, $4F, $11 // VMOVUPS zmmword ptr [RDI + 1088], ZMM17
+    DB  $62, $E1, $7C, $48, $11, $57, $12 // VMOVUPS zmmword ptr [RDI + 1152], ZMM18
+    DB  $62, $E1, $7C, $48, $11, $5F, $13 // VMOVUPS zmmword ptr [RDI + 1216], ZMM19
+    DB  $62, $E1, $7C, $48, $11, $67, $14 // VMOVUPS zmmword ptr [RDI + 1280], ZMM20
+    DB  $62, $E1, $7C, $48, $11, $6F, $15 // VMOVUPS zmmword ptr [RDI + 1344], ZMM21
+    DB  $62, $E1, $7C, $48, $11, $77, $16 // VMOVUPS zmmword ptr [RDI + 1408], ZMM22
+    DB  $62, $E1, $7C, $48, $11, $7F, $17 // VMOVUPS zmmword ptr [RDI + 1472], ZMM23
+
+    DB  $62, $61, $7C, $48, $11, $47, $18 // VMOVUPS zmmword ptr [RDI + 1536], ZMM24
+    DB  $62, $61, $7C, $48, $11, $4F, $19 // VMOVUPS zmmword ptr [RDI + 1600], ZMM25
+    DB  $62, $61, $7C, $48, $11, $57, $1A // VMOVUPS zmmword ptr [RDI + 1664], ZMM26
+    DB  $62, $61, $7C, $48, $11, $5F, $1B // VMOVUPS zmmword ptr [RDI + 1728], ZMM27
+    DB  $62, $61, $7C, $48, $11, $67, $1C // VMOVUPS zmmword ptr [RDI + 1792], ZMM28
+    DB  $62, $61, $7C, $48, $11, $6F, $1D // VMOVUPS zmmword ptr [RDI + 1856], ZMM29
+    DB  $62, $61, $7C, $48, $11, $77, $1E // VMOVUPS zmmword ptr [RDI + 1920], ZMM30
+    DB  $62, $61, $7C, $48, $11, $7F, $1F // VMOVUPS zmmword ptr [RDI + 1984], ZMM31
+  {$ENDIF}
+{$ELSE}
+    // Win32, Lin32
+    DB  $62, $f1, $7c, $48, $11, $00      // VMOVUPS zmmword ptr [EAX + 0000], ZMM0
+    DB  $62, $f1, $7c, $48, $11, $48, $01 // VMOVUPS zmmword ptr [EAX + 0064], ZMM1
+    DB  $62, $f1, $7c, $48, $11, $50, $02 // VMOVUPS zmmword ptr [EAX + 0128], ZMM2
+    DB  $62, $f1, $7c, $48, $11, $58, $03 // VMOVUPS zmmword ptr [EAX + 0192], ZMM3
+    DB  $62, $f1, $7c, $48, $11, $60, $04 // VMOVUPS zmmword ptr [EAX + 0256], ZMM4
+    DB  $62, $f1, $7c, $48, $11, $68, $05 // VMOVUPS zmmword ptr [EAX + 0320], ZMM5
+    DB  $62, $f1, $7c, $48, $11, $70, $06 // VMOVUPS zmmword ptr [EAX + 0384], ZMM6
+    DB  $62, $f1, $7c, $48, $11, $78, $07 // VMOVUPS zmmword ptr [EAX + 0448], ZMM7
+{$ENDIF}
+end;
+
+//------------------------------------------------------------------------------
+
+procedure GetAVX512MaskRegs(Storage: Pointer); assembler; register;
+asm
+{$IFDEF x64}
+  {$IFDEF Windows}
+    // Win64
+    DB  $C4, $E1, $F8, $91, $01       // KMOVQ [RCX + 00], K0
+    DB  $C4, $E1, $F8, $91, $49, $08  // KMOVQ [RCX + 08], K1
+    DB  $C4, $E1, $F8, $91, $51, $10  // KMOVQ [RCX + 16], K2
+    DB  $C4, $E1, $F8, $91, $59, $18  // KMOVQ [RCX + 24], K3
+    DB  $C4, $E1, $F8, $91, $61, $20  // KMOVQ [RCX + 32], K4
+    DB  $C4, $E1, $F8, $91, $69, $28  // KMOVQ [RCX + 40], K5
+    DB  $C4, $E1, $F8, $91, $71, $30  // KMOVQ [RCX + 48], K6
+    DB  $C4, $E1, $F8, $91, $79, $38  // KMOVQ [RCX + 56], K7
+  {$ELSE}
+    // Lin64
+    DB  $C4, $E1, $F8, $91, $07       // KMOVQ [RDI + O0], K0
+    DB  $C4, $E1, $F8, $91, $4F, $08  // KMOVQ [RDI + O8], K1
+    DB  $C4, $E1, $F8, $91, $57, $10  // KMOVQ [RDI + 16], K2
+    DB  $C4, $E1, $F8, $91, $5F, $18  // KMOVQ [RDI + 24], K3
+    DB  $C4, $E1, $F8, $91, $67, $20  // KMOVQ [RDI + 32], K4
+    DB  $C4, $E1, $F8, $91, $6F, $28  // KMOVQ [RDI + 40], K5
+    DB  $C4, $E1, $F8, $91, $77, $30  // KMOVQ [RDI + 48], K6
+    DB  $C4, $E1, $F8, $91, $7F, $38  // KMOVQ [RDI + 56], K7
+  {$ENDIF}
+{$ELSE}
+    // Win32, Lin32
+    DB  $C4, $E1, $F8, $91, $00       // KMOVQ [EAX + 00], K0
+    DB  $C4, $E1, $F8, $91, $48, $08  // KMOVQ [EAX + 08], K1
+    DB  $C4, $E1, $F8, $91, $50, $10  // KMOVQ [EAX + 16], K2
+    DB  $C4, $E1, $F8, $91, $58, $18  // KMOVQ [EAX + 24], K3
+    DB  $C4, $E1, $F8, $91, $60, $20  // KMOVQ [EAX + 32], K4
+    DB  $C4, $E1, $F8, $91, $68, $28  // KMOVQ [EAX + 40], K5
+    DB  $C4, $E1, $F8, $91, $70, $30  // KMOVQ [EAX + 48], K6
+    DB  $C4, $E1, $F8, $91, $78, $38  // KMOVQ [EAX + 56], K7
+{$ENDIF}
+end;
+
+//------------------------------------------------------------------------------
+
+procedure GetAVXData(Storage: Pointer); assembler; register;
+asm
+{$IFDEF x64}
+  {$IFDEF Windows}
+    // Win64
+    DB  $C5, $FC, $11, $01                      // VMOVUPS ymmword ptr [RCX + 000], YMM0
+    DB  $C5, $FC, $11, $49, $40                 // VMOVUPS ymmword ptr [RCX + 064], YMM1
+    DB  $C5, $FC, $11, $91, $80, $00, $00, $00  // VMOVUPS ymmword ptr [RCX + 128], YMM2
+    DB  $C5, $FC, $11, $99, $C0, $00, $00, $00  // VMOVUPS ymmword ptr [RCX + 192], YMM3
+    DB  $C5, $FC, $11, $A1, $00, $01, $00, $00  // VMOVUPS ymmword ptr [RCX + 256], YMM4
+    DB  $C5, $FC, $11, $A9, $40, $01, $00, $00  // VMOVUPS ymmword ptr [RCX + 320], YMM5
+    DB  $C5, $FC, $11, $B1, $80, $01, $00, $00  // VMOVUPS ymmword ptr [RCX + 384], YMM6
+    DB  $C5, $FC, $11, $B9, $C0, $01, $00, $00  // VMOVUPS ymmword ptr [RCX + 448], YMM7
+
+    DB  $C5, $7C, $11, $81, $00, $02, $00, $00  // VMOVUPS ymmword ptr [RCX + 512], YMM8
+    DB  $C5, $7C, $11, $89, $40, $02, $00, $00  // VMOVUPS ymmword ptr [RCX + 576], YMM9
+    DB  $C5, $7C, $11, $91, $80, $02, $00, $00  // VMOVUPS ymmword ptr [RCX + 640], YMM10
+    DB  $C5, $7C, $11, $99, $C0, $02, $00, $00  // VMOVUPS ymmword ptr [RCX + 704], YMM11
+    DB  $C5, $7C, $11, $A1, $00, $03, $00, $00  // VMOVUPS ymmword ptr [RCX + 768], YMM12
+    DB  $C5, $7C, $11, $A9, $40, $03, $00, $00  // VMOVUPS ymmword ptr [RCX + 832], YMM13
+    DB  $C5, $7C, $11, $B1, $80, $03, $00, $00  // VMOVUPS ymmword ptr [RCX + 896], YMM14
+    DB  $C5, $7C, $11, $B9, $C0, $03, $00, $00  // VMOVUPS ymmword ptr [RCX + 960], YMM15
+  {$ELSE}
+    // Lin64
+    DB  $C5, $FC, $11, $07                      // VMOVUPS ymmword ptr [RDI + 000], YMM0
+    DB  $C5, $FC, $11, $4F, $40                 // VMOVUPS ymmword ptr [RDI + 064], YMM1
+    DB  $C5, $FC, $11, $97, $80, $00, $00, $00  // VMOVUPS ymmword ptr [RDI + 128], YMM2
+    DB  $C5, $FC, $11, $9F, $C0, $00, $00, $00  // VMOVUPS ymmword ptr [RDI + 192], YMM3
+    DB  $C5, $FC, $11, $A7, $00, $01, $00, $00  // VMOVUPS ymmword ptr [RDI + 256], YMM4
+    DB  $C5, $FC, $11, $AF, $40, $01, $00, $00  // VMOVUPS ymmword ptr [RDI + 320], YMM5
+    DB  $C5, $FC, $11, $B7, $80, $01, $00, $00  // VMOVUPS ymmword ptr [RDI + 384], YMM6
+    DB  $C5, $FC, $11, $BF, $C0, $01, $00, $00  // VMOVUPS ymmword ptr [RDI + 448], YMM7
+
+    DB  $C5, $7C, $11, $87, $00, $02, $00, $00  // VMOVUPS ymmword ptr [RDI + 512], YMM8
+    DB  $C5, $7C, $11, $8F, $40, $02, $00, $00  // VMOVUPS ymmword ptr [RDI + 576], YMM9
+    DB  $C5, $7C, $11, $97, $80, $02, $00, $00  // VMOVUPS ymmword ptr [RDI + 640], YMM10
+    DB  $C5, $7C, $11, $9F, $C0, $02, $00, $00  // VMOVUPS ymmword ptr [RDI + 704], YMM11
+    DB  $C5, $7C, $11, $A7, $00, $03, $00, $00  // VMOVUPS ymmword ptr [RDI + 768], YMM12
+    DB  $C5, $7C, $11, $AF, $40, $03, $00, $00  // VMOVUPS ymmword ptr [RDI + 832], YMM13
+    DB  $C5, $7C, $11, $B7, $80, $03, $00, $00  // VMOVUPS ymmword ptr [RDI + 896], YMM14
+    DB  $C5, $7C, $11, $BF, $C0, $03, $00, $00  // VMOVUPS ymmword ptr [RDI + 960], YMM15
+  {$ENDIF}
+{$ELSE}
+    // Win32, Lin32
+    DB  $c5, $fc, $11, $00                      // VMOVUPS ymmword ptr [EAX + 000], YMM0
+    DB  $c5, $fc, $11, $48, $40                 // VMOVUPS ymmword ptr [EAX + 064], YMM1
+    DB  $c5, $fc, $11, $90, $80, $00, $00, $00  // VMOVUPS ymmword ptr [EAX + 128], YMM2
+    DB  $c5, $fc, $11, $98, $c0, $00, $00, $00  // VMOVUPS ymmword ptr [EAX + 192], YMM3
+    DB  $c5, $fc, $11, $a0, $00, $01, $00, $00  // VMOVUPS ymmword ptr [EAX + 256], YMM4
+    DB  $c5, $fc, $11, $a8, $40, $01, $00, $00  // VMOVUPS ymmword ptr [EAX + 320], YMM5
+    DB  $c5, $fc, $11, $b0, $80, $01, $00, $00  // VMOVUPS ymmword ptr [EAX + 384], YMM6
+    DB  $c5, $fc, $11, $b8, $c0, $01, $00, $00  // VMOVUPS ymmword ptr [EAX + 448], YMM7
+{$ENDIF}
+end;
+
+//------------------------------------------------------------------------------
+
+{$IFDEF FPCDWM}{$PUSH}W7122{$ENDIF}
+procedure GetSSEData(Storage: Pointer); assembler; register;
+asm
+    MOVUPS  dqword ptr [Storage + 000], XMM0
+    MOVUPS  dqword ptr [Storage + 064], XMM1
+    MOVUPS  dqword ptr [Storage + 128], XMM2
+    MOVUPS  dqword ptr [Storage + 192], XMM3
+    MOVUPS  dqword ptr [Storage + 256], XMM4
+    MOVUPS  dqword ptr [Storage + 320], XMM5
+    MOVUPS  dqword ptr [Storage + 384], XMM6
+    MOVUPS  dqword ptr [Storage + 448], XMM7
+  {$IFDEF x64}
+    MOVUPS  dqword ptr [Storage + 512], XMM8
+    MOVUPS  dqword ptr [Storage + 576], XMM9
+    MOVUPS  dqword ptr [Storage + 640], XMM10
+    MOVUPS  dqword ptr [Storage + 704], XMM11
+    MOVUPS  dqword ptr [Storage + 768], XMM12
+    MOVUPS  dqword ptr [Storage + 832], XMM13
+    MOVUPS  dqword ptr [Storage + 896], XMM14
+    MOVUPS  dqword ptr [Storage + 960], XMM15
+  {$ENDIF}
+end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
+
+//------------------------------------------------------------------------------
+
+procedure RaiseSnapshot_CopyToTLS(Storage: PAERegisterStorage); register;
+begin
+If not Assigned(RaiseSnapshotStorage) then
+  RaiseSnapshotStorage := AllocMem(SizeOf(TAERegisterStorage));
+RaiseSnapshotStorage^ := Storage^;
+end;
+
+{===============================================================================
+    Registers obtaining - implementation
+===============================================================================}
+
+{$STACKFRAMES ON} // make sure stack frame is created in RaiseSnapshot
+
+{$IFDEF FPCDWM}{$PUSH}W7102{$ENDIF}
+Function RaiseSnapshot: Pointer;
+var
+  Data: TAERegisterStorage; // allocated on stack
+asm
+{$IFDEF x64}
+    // get and preserve RAX
+    MOV     qword ptr [Data.GP], RAX
+    // RIP (return address of this function)
+    MOV     RAX, qword ptr [RBP + 4]
+    MOV     qword ptr [Data.IP], RAX
+    // other GP
+    MOV     qword ptr [Data.GP + 8], RBX
+    MOV     qword ptr [Data.GP + 16], RCX
+    MOV     qword ptr [Data.GP + 24], RDX
+    MOV     qword ptr [Data.GP + 32], RSI
+    MOV     qword ptr [Data.GP + 40], RDI
+    MOV     qword ptr [Data.GP + 64], R8
+    MOV     qword ptr [Data.GP + 72], R9
+    MOV     qword ptr [Data.GP + 80], R10
+    MOV     qword ptr [Data.GP + 88], R11
+    MOV     qword ptr [Data.GP + 96], R12
+    MOV     qword ptr [Data.GP + 104], R13
+    MOV     qword ptr [Data.GP + 112], R14
+    MOV     qword ptr [Data.GP + 120], R15
+    // get stack base stored on stack in the function prolog
+    MOV     RAX, qword ptr [RBP]
+    MOV     qword ptr [Data.GP + 48], RAX   // RBP
+    // stack pointer as it was before the call and will be after it
+    LEA     RAX, [RBP + 16]
+    MOV     qword ptr [Data.GP + 56], RAX   // RSP
+    // flags
+    PUSHFQ
+    POP     RAX
+    MOV     qword ptr [Data.FLAGS], RAX
+{$ELSE}
+    // get and preserve EAX
+    MOV     dword ptr [Data.GP], EAX
+    // EIP (return address of this function)
+    MOV     EAX, dword ptr [EBP + 4]
+    MOV     dword ptr [Data.IP], EAX
+    // other GP
+    MOV     dword ptr [Data.GP + 4], EBX
+    MOV     dword ptr [Data.GP + 8], ECX
+    MOV     dword ptr [Data.GP + 12], EDX
+    MOV     dword ptr [Data.GP + 16], ESI
+    MOV     dword ptr [Data.GP + 20], EDI
+    // get stack base stored on stack in the function prolog
+    MOV     EAX, dword ptr [EBP]
+    MOV     dword ptr [Data.GP + 24], EAX   // EBP
+    // stack pointer as it was before the call and will be after it
+    LEA     EAX, [EBP + 8]
+    MOV     dword ptr [Data.GP + 28], EAX   // ESP
+    // flags
+    PUSHFD
+    POP     EAX
+    MOV     dword ptr [Data.FLAGS], EAX
+{$ENDIF}
+  
+    // segments
+    MOV     word ptr [Data.SG], CS
+    MOV     word ptr [Data.SG + 2], DS
+    MOV     word ptr [Data.SG + 4], SS
+    MOV     word ptr [Data.SG + 5], ES
+    MOV     word ptr [Data.SG + 8], FS
+    MOV     word ptr [Data.SG + 10], GS
+
+    // FPU
+{$IFDEF x64}
+    TEST    dword ptr [RIP + MachineFeaturesWord], AE_MACHINEFEATURES_FPU
+    JZ      @SkipFPU
+  {$IFDEF Windows}
+    LEA     RCX, [Data.CW]
+  {$ELSE}
+    LEA     RDI, [Data.CW]
+  {$ENDIF}
+{$ELSE}
+    TEST    dword ptr [MachineFeaturesWord], AE_MACHINEFEATURES_FPU
+    JZ      @SkipFPU
+    LEA     EAX, [Data.CW]
+{$ENDIF}
+    CALL    GetX87Data
+  @SkipFPU:
+
+    // MMX
+{$IFDEF x64}
+    TEST    dword ptr [RIP + MachineFeaturesWord], AE_MACHINEFEATURES_MMX
+    JZ      @SkipMMX
+  {$IFDEF Windows}
+    LEA     RCX, [Data.MM]
+  {$ELSE}
+    LEA     RDI, [Data.MM]
+  {$ENDIF}
+{$ELSE}
+    TEST    dword ptr [MachineFeaturesWord], AE_MACHINEFEATURES_MMX
+    JZ      @SkipMMX
+    LEA     EAX, [Data.MM]
+{$ENDIF}
+    CALL    GetMMXData
+  @SkipMMX:
+
+    // MXCSR
+    STMXCSR   dword ptr [Data.MXCSR]
+
+    // AVX512
+{$IFDEF x64}
+    TEST    dword ptr [RIP + MachineFeaturesWord], AE_MACHINEFEATURES_AVX512
+    JZ      @SkipAVX512
+  {$IFDEF Windows}
+    LEA     RCX, [Data.ZMM]
+  {$ELSE}
+    LEA     RDI, [Data.ZMM]
+  {$ENDIF}
+{$ELSE}
+    TEST    dword ptr [MachineFeaturesWord], AE_MACHINEFEATURES_AVX512
+    JZ      @SkipAVX512
+    LEA     EAX, [Data.ZMM]
+{$ENDIF}
+    CALL    GetAVX512Data
+{$IFDEF x64}
+  {$IFDEF Windows}
+    LEA     RCX, [Data.K]
+  {$ELSE}
+    LEA     RDI, [Data.K]
+  {$ENDIF}
+{$ELSE}
+    LEA     EAX, [Data.K]
+{$ENDIF}
+    CALL    GetAVX512MaskRegs
+    JMP     @SkipSSE  // AVX and SSE states are already stored within AVX-512
+  @SkipAVX512:
+
+    // AVX(2)
+{$IFDEF x64}
+    TEST    dword ptr [RIP + MachineFeaturesWord], AE_MACHINEFEATURES_AVX
+    JZ      @SkipAVX
+  {$IFDEF Windows}
+    LEA     RCX, [Data.ZMM]
+  {$ELSE}
+    LEA     RDI, [Data.ZMM]
+  {$ENDIF}
+{$ELSE}
+    TEST    dword ptr [MachineFeaturesWord], AE_MACHINEFEATURES_AVX
+    JZ      @SkipAVX
+    LEA     EAX, [Data.ZMM]
+{$ENDIF}
+    CALL    GetAVXData
+    JMP     @SkipSSE  // SSE state is already stored within AVX
+  @SkipAVX:
+
+    // SSE
+{$IFDEF x64}
+    TEST    dword ptr [RIP + MachineFeaturesWord], AE_MACHINEFEATURES_SSE
+    JZ      @SkipSSE
+  {$IFDEF Windows}
+    LEA     RCX, [Data.ZMM]
+  {$ELSE}
+    LEA     RDI, [Data.ZMM]
+  {$ENDIF}
+{$ELSE}
+    TEST    dword ptr [MachineFeaturesWord], AE_MACHINEFEATURES_SSE
+    JZ      @SkipSSE
+    LEA     EAX, [Data.ZMM]
+{$ENDIF}
+    CALL    GetSSEData
+  @SkipSSE:
+
+    // system registers
+    SMSW    word ptr [Data.MSW]
+
+    // copy data to thread-local storage
+{$IFDEF x64}
+  {$IFDEF Windows}
+    LEA     RCX, [Data]
+  {$ELSE}
+    LEA     RDI, [Data]
+  {$ENDIF}
+{$ELSE}
+    LEA     EAX, [Data]
+{$ENDIF}
+    CALL    RaiseSnapshot_CopyToTLS
+
+{$IFDEF x64}
+    // result
+    MOV     RAX, qword ptr [Data.IP]
+{$ELSE}
+    // result
+    MOV     EAX, dword ptr [Data.IP]
+{$ENDIF}
+end;
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
+
+{$IFNDEF AE_StackFramesEnabled}
+  {$STACKFRAMES OFF}
+{$ENDIF}
+
+{$ENDIF}
+
 {===============================================================================
 --------------------------------------------------------------------------------
                                EAECustomException
@@ -281,26 +990,116 @@ fTime := Now;
 {$IFDEF Windows}
 fThreadID := Windows.GetCurrentThreadID;
 {$ELSE}
-fThreadID := pthreads.pthread_self;
+fThreadID := pthread_self;
 {$ENDIF}
 end;
 
 
+{$IFDEF ExtendedException}
 {===============================================================================
 --------------------------------------------------------------------------------
                                EAEExtendedException
 --------------------------------------------------------------------------------
 ===============================================================================}
 {===============================================================================
-    EAEExtendedException - class declaration
+    EAEExtendedException - class implementation
 ===============================================================================}
+{-------------------------------------------------------------------------------
+    EAEExtendedException - protected methods
+-------------------------------------------------------------------------------}
+
+procedure EAEExtendedException.InitRegisters;
+var
+  TLSRegsPtr: PAERegisterStorage;
+  i:          Integer;
+
+  procedure DoFloatVectors(Length,Count: Integer);
+  var
+    ii: Integer;
+  begin
+    fRegisters.FloatVector.Length := Length;
+    fRegisters.FloatVector.Count := Count;
+    For ii := 0 to Pred(Count) do
+    {$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
+      Move(Pointer(PtrUInt(Addr(TLSRegsPtr^.ZMM)) + PtrUInt(ii * Length * 4))^,
+           fRegisters.FloatVector.Regs[ii],Length * 4);
+    {$IFDEF FPCDWM}{$POP}{$ENDIF}
+    fRegisters.FloatVector.MXCSR := TLSRegsPtr^.MXCSR;
+  end;
+
+begin
+If Assigned(RaiseSnapshotStorage) then
+  begin
+    // prevent reapeated calls to GetTLS
+    TLSRegsPtr := RaiseSnapshotStorage;
+    // copy registers from TLS to this object's field
+    For i := 0 to AE_GPR_HIGH do
+      fRegisters.Basic.GeneralPurpose.Regs[i].Native := TLSRegsPtr^.GP[i];
+    For i := 0 to 5 do
+      fRegisters.Basic.Segment.Regs[i] := TLSRegsPtr^.SG[i];
+    fRegisters.Basic.Flags := TLSRegsPtr^.FLAGS;
+    fRegisters.Basic.InstructionPointer := TLSRegsPtr^.IP;
+    fRegisters.PresentRegisters := [prBasic];
+    // x87 FPU
+    If MachineFeaturesWord and AE_MACHINEFEATURES_FPU <> 0 then
+      begin
+        For i := 0 to 7 do
+          Move(TLSRegsPtr^.Stack[i],fRegisters.Float.Stack[i],10);
+        fRegisters.Float.ControlWord := TLSRegsPtr^.CW;
+        fRegisters.Float.StatusWord := TLSRegsPtr^.SW;
+        fRegisters.Float.TagWord := TLSRegsPtr^.TW;
+        fRegisters.Float.LastInstructionPointerSelector := TLSRegsPtr^.FCS;
+        fRegisters.Float.LastInstructionPointerOffset := TLSRegsPtr^.FIP;
+        fRegisters.Float.LastDataPointerSelector := TLSRegsPtr^.FDS;
+        fRegisters.Float.LastDataPointerOffset := TLSRegsPtr^.FDP;
+        fRegisters.Float.OpCode := TLSRegsPtr^.OpCode;
+        Include(fRegisters.PresentRegisters,prFPU);
+      end;
+    // MMX
+    If MachineFeaturesWord and AE_MACHINEFEATURES_MMX <> 0 then
+      begin
+        For i := 0 to 7 do
+          fRegisters.IntegerVector.MM[i].VecQuad := TLSRegsPtr^.MM[i];
+        Include(fRegisters.PresentRegisters,prMMX);
+      end;
+    // AVX-512
+    If MachineFeaturesWord and AE_MACHINEFEATURES_AVX512 <> 0 then
+      begin
+        DoFloatVectors(16{64bytes, 512bits},{$IFDEF x64}32{$ELSE}8{$ENDIF});
+        For i := 0 to 7 do
+          fRegisters.FloatVector.OPMask[i] := TLSRegsPtr^.K[i];
+        fRegisters.PresentRegisters := fRegisters.PresentRegisters + [prSSE,prAVX,prAVX512];
+      end
+    // AVX
+    else If MachineFeaturesWord and AE_MACHINEFEATURES_AVX <> 0 then
+      begin
+        DoFloatVectors(8{32bytes, 256bits},{$IFDEF x64}16{$ELSE}8{$ENDIF});
+        fRegisters.PresentRegisters := fRegisters.PresentRegisters + [prSSE,prAVX];
+      end
+    // SSE  
+    else If MachineFeaturesWord and AE_MACHINEFEATURES_SSE <> 0 then
+      begin
+        DoFloatVectors(4{16bytes, 128bits},{$IFDEF x64}16{$ELSE}8{$ENDIF});
+        fRegisters.PresentRegisters := fRegisters.PresentRegisters + [prSSE];
+      end;
+    // system regs
+    fRegisters.System.MachineStatusWord := TLSRegsPtr^.MSW;
+  end
+else fRegisters.PresentRegisters := [];
+end;
+
+{-------------------------------------------------------------------------------
+    EAEExtendedException - public methods
+-------------------------------------------------------------------------------}
 
 constructor EAEExtendedException.CreateFmt(const Msg: String; Args: array of const);
 begin
-// get ALL registers to local storage
-// inherited constructor
-// copy registers from local storage to objects storage
+inherited CreateFmt(Msg,Args);
+InitRegisters;
 end;
+
+{$ENDIF}
+
 
 {===============================================================================
 --------------------------------------------------------------------------------
@@ -607,4 +1406,78 @@ else
   Result := 'Invalid %s.';
 end;
 
+
+{$IFDEF ExtendedException}
+{===============================================================================
+--------------------------------------------------------------------------------
+                                  RaiseSnapshot
+--------------------------------------------------------------------------------
+===============================================================================}
+{===============================================================================
+    RaiseSnapshot - implementation
+===============================================================================}
+{$IFOPT W+}
+  {$DEFINE AE_StackFramesEnabled}
+{$ELSE}
+  {$UNDEF AE_StackFramesEnabled}
+{$ENDIF}
+{$STACKFRAMES ON} // make sure stack frames are on for RaiseSnapshot
+
+//Function RaiseSnapshot: Pointer;
+
+{$IFNDEF AE_StackFramesEnabled}
+  {$STACKFRAMES OFF}
+{$ENDIF}
+
+{$ENDIF ExtendedException}
+
 {$ENDIF AE_Include_Implementation}
+
+{===============================================================================
+********************************************************************************
+===============================================================================}
+
+{$IFDEF AE_Include_UnitInitFinal}
+
+{$IFDEF ExtendedException}
+
+procedure UnitInitialize;
+begin
+with TSimpleCPUID.Create do
+try
+  MachineFeaturesWord := 0;
+  // prepare machine features word
+  If Info.SupportedExtensions.X87 and not Info.SupportedExtensions.EmulatedX87 then
+    MachineFeaturesWord := MachineFeaturesWord or AE_MACHINEFEATURES_FPU;
+  If Info.SupportedExtensions.MMX then
+    MachineFeaturesWord := MachineFeaturesWord or AE_MACHINEFEATURES_MMX;
+  If Info.SupportedExtensions.SSE then
+    MachineFeaturesWord := MachineFeaturesWord or AE_MACHINEFEATURES_SSE;
+  If Info.SupportedExtensions.AVX then
+    MachineFeaturesWord := MachineFeaturesWord or AE_MACHINEFEATURES_AVX;
+  If Info.SupportedExtensions.AVX512F then
+    MachineFeaturesWord := MachineFeaturesWord or AE_MACHINEFEATURES_AVX512;
+finally
+  Free;
+end;
+end;
+
+//------------------------------------------------------------------------------
+
+procedure UnitFinalize;
+begin
+If Assigned(RaiseSnapshotStorage) then
+  FreeMem(RaiseSnapshotStorage);
+end;
+
+//------------------------------------------------------------------------------
+
+initialization
+  UnitInitialize;
+
+finalization
+  UnitFinalize;
+
+{$ENDIF}
+
+{$ENDIF AE_Include_UnitInitFinal}

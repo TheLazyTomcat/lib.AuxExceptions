@@ -1,9 +1,10 @@
 unit AuxExceptions;
+
+{$DEFINE AllowExtendedException}
+
 {$DEFINE AE_Include_Defs}
   {$INCLUDE '.\AuxExceptions.inc'}
 {$UNDEF AE_Include_Defs}
-
-{$DEFINE ExtendedException}
 
 interface
 
@@ -14,11 +15,23 @@ interface
 type
   EBaseException = class(Exception);
 
-  EAEBaseException = class(EBaseException);
+  EAEBaseException = EBaseException;
 
 {$DEFINE AE_Include_Interface}
   {$INCLUDE '.\AuxExceptions.inc'}
 {$UNDEF AE_Include_Interface}
+
+type
+  EGeneralException     = EAEGeneralException;
+  ESystemError          = EAESystemError;
+  EIndexException       = EAEIndexException;
+  EIndexOutOfBounds     = EAEIndexOutOfBounds;
+  EIndexTooLow          = EAEIndexTooLow;
+  EIndexTooHigh         = EAEIndexTooHigh;
+  EIndexInvalid         = EAEIndexInvalid;
+  EValueException       = EAEValueException;
+  EValueInvalid         = EAEValueInvalid;
+  EValueInvalidNameOnly = EAEValueInvalidNameOnly;
 
 implementation
 
@@ -30,12 +43,8 @@ implementation
   {$INCLUDE '.\AuxExceptions.inc'}
 {$UNDEF AE_Include_Implementation}
 
+{$DEFINE AE_Include_UnitInitFinal}
+  {$INCLUDE '.\AuxExceptions.inc'}
+{$UNDEF AE_Include_UnitInitFinal}
+
 end.
-
-
-
-
-
-
-
-
