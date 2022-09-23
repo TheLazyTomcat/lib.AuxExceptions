@@ -1,4 +1,59 @@
+{-------------------------------------------------------------------------------
+
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this
+  file, You can obtain one at http://mozilla.org/MPL/2.0/.
+
+-------------------------------------------------------------------------------}
+{===============================================================================
+
+  AuxExceptions - implementation file
+
+    This file (AuxException.inc) contains almost entire implementation of
+    AuxExceptions library. It is stored separately to allow for classes
+    rebasing.
+
+  Version 1.0 (2022-09-23)
+
+  Last change 2022-09-23
+
+  ©2019-2022 František Milt
+
+  Contacts:
+    František Milt: frantisek.milt@gmail.com
+
+  Support:
+    If you find this code useful, please consider supporting its author(s) by
+    making a small donation using the following link(s):
+
+      https://www.paypal.me/FMilt
+
+  Changelog:
+    For detailed changelog and history please refer to this git repository:
+
+      github.com/TheLazyTomcat/Lib.AuxExceptions
+
+  Dependencies:
+  * AuxTypes    - github.com/TheLazyTomcat/Lib.AuxTypes
+  * SimpleCPUID - github.com/TheLazyTomcat/Lib.SimpleCPUID
+
+  Libraries AuxTypes and SimpleCPUID are required only when compiling for IA32
+  or AMD64 CPU, PurePascal is not defined and symbol AllowExtendedException
+  is defined.
+
+===============================================================================}
 {$IFDEF AE_Include_Defs}
+{
+  AuxExceptions_PurePascal
+
+  If you want to compile this unit without ASM, don't want to or cannot define
+  PurePascal for the entire project and at the same time you don't want to or
+  cannot make changes to this unit, define this symbol for the entire project
+  and this unit will be compiled in PurePascal mode.
+}
+{$IFDEF AuxExceptions_PurePascal}
+  {$DEFINE PurePascal}
+{$ENDIF}
 
 {$IF Defined(CPUX86_64) or Defined(CPUX64)}
   {$DEFINE x64}
@@ -46,8 +101,8 @@
 
 {$IFDEF AE_Include_Interface_Uses}
 uses
-  SysUtils, {$IFDEF Windows}Windows{$ELSE}baseunix{$ENDIF},
-  AuxTypes;
+  SysUtils{$IFDEF Windows}, Windows{$ELSE}, BaseUnix{$ENDIF}
+  {$IFDEF ExtendedException}, AuxTypes{$ENDIF};
 
 {$ENDIF AE_Include_Interface_Uses}
 
@@ -76,10 +131,13 @@ type
   protected
     fTime:      TDateTime;
     fThreadID:  TAEThreadID;
+    fExcAddr:   Pointer;
   public
     constructor CreateFmt(const Msg: String; Args: array of const);
+    constructor Create(const Msg: String);
     property Time: TDateTime read fTime;
     property ThreadID: TAEThreadID read fThreadID;
+    property ExceptAddress: Pointer read fExcAddr;
   end;
 
 {$IFDEF ExtendedException}
@@ -219,14 +277,13 @@ type
     Float:            TAEFloatRegisters;          // x87 FPU
     IntegerVector:    TAEIntegerVectorRegisters;  // MMX
     FloatVector:      TAEFloatVectorRegisters;    // SSE, AVX
-    System:           TAESystemRegisters;
+    System:           TAESystemRegisters;         // MSW
   end;
 
 {===============================================================================
     EAEExtendedException - class declaration
 ===============================================================================}
 type
-{$message 'add msw reg, stacktrace, file(w), modules(w)'}
   EAEExtendedException = class(EAECustomException)
   protected
     fRegisters: TAERegisters;
@@ -408,27 +465,13 @@ type
     class Function GetDefaultMessage(ValueString: Boolean): String; override;
   end;
 
-{$IFDEF ExtendedException}
-{===============================================================================
---------------------------------------------------------------------------------
-                                  RaiseSnapshot
---------------------------------------------------------------------------------
-===============================================================================}
-{===============================================================================
-    RaiseSnapshot - declaration
-===============================================================================}
-
-Function RaiseSnapshot: Pointer; register; assembler;
-
-{$ENDIF}
-
 {$ENDIF AE_Include_Interface}
 
 {===============================================================================
 ********************************************************************************
 ===============================================================================}
 
-{$IFDEF FPC}{$WARN 2005 OFF}{$ENDIF}
+{$IFDEF FPC}{$PUSH}{$WARN 2005 OFF}{$ENDIF}
 {$IFDEF AE_Include_Implementation_Uses}
 uses
   Variants{$IFDEF Windows}{$ELSE}, pthreads{$ENDIF}
@@ -436,13 +479,19 @@ uses
 
 {$IFDEF FPC_DisableWarns}
   {$DEFINE FPCDWM}
-  {$DEFINE W4055:={$WARN 4055 OFF}} // Conversion between ordinals and pointers is not portable
-  {$DEFINE W7102:={$WARN 7102 OFF}} // Use of +offset(%ebp) for parameters invalid here
-  {$DEFINE W7122:={$WARN 7122 OFF}} // Check size of memory operand "$1: memory-operand-size is $2 bits, but expected [$3 bits + $4 byte offset]"
+  {$DEFINE W4055:={$WARN 4055 OFF}}   // Conversion between ordinals and pointers is not portable
+  {$DEFINE W7102:={$WARN 7102 OFF}}   // Use of +offset(%ebp) for parameters invalid here
+  {$PUSH}{$WARN 2005 OFF}             // Comment level $1 found
+  {$IF Defined(FPC) and (FPC_FULLVERSION >= 30000)}
+    {$DEFINE W7122:={$WARN 7122 OFF}} // Check size of memory operand "$1: memory-operand-size is $2 bits, but expected [$3 bits + $4 byte offset]"
+  {$ELSE}
+    {$DEFINE W7122:=}
+  {$IFEND}
+  {$POP}
 {$ENDIF}
 
 {$ENDIF AE_Include_Implementation_Uses}
-{$IFDEF FPC}{$WARN 2005 ON}{$ENDIF}
+{$IFDEF FPC}{$POP}{$ENDIF}
 
 {===============================================================================
 ********************************************************************************
@@ -538,7 +587,7 @@ asm
     MOVQ    qword ptr [Storage + 32], MM4
     MOVQ    qword ptr [Storage + 40], MM5
     MOVQ    qword ptr [Storage + 48], MM6
-    MOVQ    qword ptr [Storage + 65], MM7
+    MOVQ    qword ptr [Storage + 56], MM7
     EMMS
 end;
 {$IFDEF FPCDWM}{$POP}{$ENDIF}
@@ -774,7 +823,7 @@ end;
 {$STACKFRAMES ON} // make sure stack frame is created in RaiseSnapshot
 
 {$IFDEF FPCDWM}{$PUSH}W7102{$ENDIF}
-Function RaiseSnapshot: Pointer;
+Function RegistersSnapshot: Pointer; register; assembler;
 var
   Data: TAERegisterStorage; // allocated on stack
 asm
@@ -782,7 +831,7 @@ asm
     // get and preserve RAX
     MOV     qword ptr [Data.GP], RAX
     // RIP (return address of this function)
-    MOV     RAX, qword ptr [RBP + 4]
+    MOV     RAX, qword ptr [RBP + 8]
     MOV     qword ptr [Data.IP], RAX
     // other GP
     MOV     qword ptr [Data.GP + 8], RBX
@@ -992,6 +1041,14 @@ fThreadID := Windows.GetCurrentThreadID;
 {$ELSE}
 fThreadID := pthread_self;
 {$ENDIF}
+fExcAddr := ExceptAddr;
+end;
+
+//------------------------------------------------------------------------------
+
+constructor EAECustomException.Create(const Msg: String);
+begin
+CreateFmt(Msg,[]);
 end;
 
 
@@ -1001,6 +1058,48 @@ end;
                                EAEExtendedException
 --------------------------------------------------------------------------------
 ===============================================================================}
+
+const
+  X87CW_EMASK_InvalidOP = UInt16($0001);
+
+//------------------------------------------------------------------------------  
+
+Function GetX87ControlWord: UInt16; register; assembler;
+var
+  Temp: UInt16;
+asm
+    FSTCW   word ptr [Temp]
+    MOV     AX, word ptr [Temp]
+end;
+
+//------------------------------------------------------------------------------
+
+procedure SetX87ControlWord(NewValue: UInt16); register; assembler;
+var
+  Temp: UInt16;
+asm
+    MOV     word ptr [Temp], NewValue
+    FLDCW   word ptr [Temp]
+end;
+
+//------------------------------------------------------------------------------
+
+procedure Float80ToFloat64(F80,F64: Pointer); register; assembler;
+asm
+    FLD     tbyte ptr [F80]
+    FSTP    qword ptr [F64]
+    FCLEX   // also issues FWAIT
+end;
+
+//------------------------------------------------------------------------------
+
+procedure Float80ToFloat32(F80,F32: Pointer); register; assembler;
+asm
+    FLD     tbyte ptr [F80]
+    FSTP    dword ptr [F32]
+    FCLEX
+end;
+
 {===============================================================================
     EAEExtendedException - class implementation
 ===============================================================================}
@@ -1012,6 +1111,7 @@ procedure EAEExtendedException.InitRegisters;
 var
   TLSRegsPtr: PAERegisterStorage;
   i:          Integer;
+  OldX87CW:   UInt16;
 
   procedure DoFloatVectors(Length,Count: Integer);
   var
@@ -1043,8 +1143,20 @@ If Assigned(RaiseSnapshotStorage) then
     // x87 FPU
     If MachineFeaturesWord and AE_MACHINEFEATURES_FPU <> 0 then
       begin
-        For i := 0 to 7 do
-          Move(TLSRegsPtr^.Stack[i],fRegisters.Float.Stack[i],10);
+        OldX87CW := GetX87ControlWord;
+        try
+          SetX87ControlWord(OldX87CW or X87CW_EMASK_InvalidOP);
+          For i := 0 to 7 do
+            begin
+              Move(TLSRegsPtr^.Stack[i],fRegisters.Float.Stack[i],10); 
+              Float80ToFloat64(Addr(fRegisters.Float.Stack[i].Float80),
+                               Addr(fRegisters.Float.Stack[i].Float64));
+              Float80ToFloat32(Addr(fRegisters.Float.Stack[i].Float80),
+                               Addr(fRegisters.Float.Stack[i].Float32));
+            end;
+        finally
+          SetX87ControlWord(OldX87CW);
+        end;
         fRegisters.Float.ControlWord := TLSRegsPtr^.CW;
         fRegisters.Float.StatusWord := TLSRegsPtr^.SW;
         fRegisters.Float.TagWord := TLSRegsPtr^.TW;
@@ -1084,6 +1196,8 @@ If Assigned(RaiseSnapshotStorage) then
       end;
     // system regs
     fRegisters.System.MachineStatusWord := TLSRegsPtr^.MSW;
+    FreeMem(RaiseSnapshotStorage,SizeOf(TAERegisterStorage));
+    RaiseSnapshotStorage := nil;
   end
 else fRegisters.PresentRegisters := [];
 end;
@@ -1094,6 +1208,8 @@ end;
 
 constructor EAEExtendedException.CreateFmt(const Msg: String; Args: array of const);
 begin
+If not Assigned(RaiseSnapshotStorage) then
+  RegistersSnapshot;
 inherited CreateFmt(Msg,Args);
 InitRegisters;
 end;
@@ -1406,31 +1522,6 @@ else
   Result := 'Invalid %s.';
 end;
 
-
-{$IFDEF ExtendedException}
-{===============================================================================
---------------------------------------------------------------------------------
-                                  RaiseSnapshot
---------------------------------------------------------------------------------
-===============================================================================}
-{===============================================================================
-    RaiseSnapshot - implementation
-===============================================================================}
-{$IFOPT W+}
-  {$DEFINE AE_StackFramesEnabled}
-{$ELSE}
-  {$UNDEF AE_StackFramesEnabled}
-{$ENDIF}
-{$STACKFRAMES ON} // make sure stack frames are on for RaiseSnapshot
-
-//Function RaiseSnapshot: Pointer;
-
-{$IFNDEF AE_StackFramesEnabled}
-  {$STACKFRAMES OFF}
-{$ENDIF}
-
-{$ENDIF ExtendedException}
-
 {$ENDIF AE_Include_Implementation}
 
 {===============================================================================
@@ -1438,6 +1529,11 @@ end;
 ===============================================================================}
 
 {$IFDEF AE_Include_UnitInitFinal}
+{===============================================================================
+--------------------------------------------------------------------------------
+                      Unit initialization and finalization                                             
+--------------------------------------------------------------------------------
+===============================================================================}
 
 {$IFDEF ExtendedException}
 
