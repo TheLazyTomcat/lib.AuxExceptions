@@ -24,22 +24,32 @@
 
     Depending on defined symbols and compilation target, the implemented
     exception classes can also provide some more advanced information, eg.
-    processor registers snapshot (at this point the only implemented option),
-    simple stack trace, list of loaded modules and more.
+    processor registers snapshot, simple stack trace, list of loaded modules
+    and more (only registers and stack trace are currently implemented).
 
-    A note on registers snapshot:
+      Registers snapshot:
 
-      The stored register values are NOT the same as when the exception was
-      raised, they are obtained inside of EAEExtendedException constructor
-      and are threfore heavily polluted.
-      There is, as far as I know, no general way of obtaining the values before
-      the exception class is instantiated (well, there is, but it works only in
-      32bit Windows, so let's ignore it for now). I you of any way on how to
-      do that, please let me know.
+        The stored register values are NOT the same as when the exception was
+        raised, they are obtained inside of EAEExtendedException constructor
+        and are threfore heavily polluted.
+        There is, as far as I know, no general way of obtaining the values
+        before the exception class is instantiated (well, there is, but it
+        works only in 32bit Windows, so let's ignore it for now). I you of any
+        way on how to do that, please let me know.
 
-  Version 1.0 (2022-09-23)
+      Stack trace:
 
-  Last change 2022-09-23
+        Only very simple stack tracing is implemented. First, the entire active
+        area of stack is dumped (copied to a buffer) and then this buffer is
+        scanned for stack frames - a list of stack frames is created (if any
+        is recognized). For each frame, its start address (both real and
+        in-dump), size and return address (corresponds to an address inside of
+        function that was using this stack frame) are stored.
+
+
+  Version 1.0.1 (2022-09-26)
+
+  Last change 2022-09-26
 
   ©2019-2022 František Milt
 

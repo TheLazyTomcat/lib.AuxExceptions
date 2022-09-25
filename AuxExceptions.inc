@@ -13,9 +13,9 @@
     AuxExceptions library. It is stored separately to allow for classes
     rebasing.
 
-  Version 1.0 (2022-09-23)
+  Version 1.0.1 (2022-09-26)
 
-  Last change 2022-09-23
+  Last change 2022-09-26
 
   ©2019-2022 František Milt
 
@@ -65,7 +65,7 @@
 
 {$IF Defined(WINDOWS) or Defined(MSWINDOWS)}
   {$DEFINE Windows}
-{$ELSEIF Defined(LINUX)}
+{$ELSEIF Defined(LINUX) and Defined(FPC)} // there are FPC-specific things used 
   {$DEFINE Linux}
 {$ELSE}
   {$MESSAGE FATAL 'Unsupported operating system.'}
@@ -149,6 +149,9 @@ type
 {===============================================================================
     EAEExtendedException - public storage types
 ===============================================================================}
+{-------------------------------------------------------------------------------
+    EAEExtendedException - public storage types - registers
+-------------------------------------------------------------------------------}
 type
   TAENativeRegister = PtrUInt;
 
@@ -280,18 +283,84 @@ type
     System:           TAESystemRegisters;         // MSW
   end;
 
+{-------------------------------------------------------------------------------
+    EAEExtendedException - public storage types - stack
+-------------------------------------------------------------------------------}
+{
+  Each function is expected to start with (if not, then all bets are off):
+
+    PUSH    EBP
+    MOV     EBP,  ESP
+
+  (or its x64 equivalent)
+  For the purpose of this library, the frame is started by moving stack pointer
+  to stack base register (second instruction above).
+  This means the frame start (its highest address) points to pushed EBP, which
+  in itsef is NOT part of the that frame. It also means that each frame, except
+  the last one, ends with pushed returns address of the function that owns/uses
+  that particular frame, followed by saved stack base address (start of that
+  frame). Let's use some "ASCII art" to ilustrate:
+
+               high address ---------------------     ---
+                            |                   |       |
+                            |   params for B    |       |
+                            |                   |       |
+                  call to B ---------------------       |-- stack frame of function A
+                            | EIP (points to A) |       |
+                            ---------------------       |
+      EBP(B) points here -> |      EBP(A)       |       |
+                            ---------------------     ---
+                            |                   |       |
+                            |  variables of B   |       |
+                            |                   |       |
+                            ---------------------       |
+                            |                   |       |
+                            |  variables of C   |       |-- stack frame of function B
+                            |                   |       |
+                  call to C ---------------------       |
+                            | EIP (points to B) |       |
+                            ---------------------       |
+         EBP points here -> |      EBP(B)       |       |
+                            ---------------------     ---
+                            |                   |       |
+                            |  variables of C   |       |-- stack frame of function C (current function)
+                            |                   |       |
+                low address ---------------------     ---
+}
+type
+  TAEStackFrame = record
+    FrameStart:       Pointer;  // frame EBP/RBP
+    FrameSize:        TMemSize; // size of this frame in bytes
+    ReturnAddress:    Pointer;  // points inside the function owning/using this frame
+    FrameStartInDump: Pointer;  // points to frame start in memory buffer storing dumped stack
+  end;
+
+  TAEStackTrace = record
+    StackTop:       Pointer;  // stack base, points above the first pushed value
+    StackBottom:    Pointer;  // ESP/RSP address, points to last pushed value
+    StackDump:      Pointer;  // points to a buffer containing the copy of active stack area
+    StackDumpSize:  TMemSize; // size of stack dump buffer
+    StackFrames:    array of TAEStackFrame;
+  end;
+
 {===============================================================================
     EAEExtendedException - class declaration
 ===============================================================================}
 type
   EAEExtendedException = class(EAECustomException)
   protected
-    fRegisters: TAERegisters;
+    fRegisters:   TAERegisters;
+    fStackTrace:  TAEStackTrace;
     procedure InitRegisters; virtual;
+    procedure InitStackTrace; virtual;
+    procedure Finalize; virtual;
   public
     constructor CreateFmt(const Msg: String; Args: array of const);
+    destructor Destroy; override;
     property Registers: TAERegisters read fRegisters;
+    property StackTrace: TAEStackTrace read fStackTrace;
   end;
+
 {$ENDIF ExtendedException}
 
 {===============================================================================
@@ -1058,7 +1127,12 @@ end;
                                EAEExtendedException
 --------------------------------------------------------------------------------
 ===============================================================================}
-
+{===============================================================================
+    EAEExtendedException - internals
+===============================================================================}
+{-------------------------------------------------------------------------------
+    EAEExtendedException - internals - registers
+-------------------------------------------------------------------------------}
 const
   X87CW_EMASK_InvalidOP = UInt16($0001);
 
@@ -1099,6 +1173,78 @@ asm
     FSTP    dword ptr [F32]
     FCLEX
 end;
+
+{-------------------------------------------------------------------------------
+    EAEExtendedException - internals - stack
+-------------------------------------------------------------------------------}
+{$IFDEF Windows}      
+type
+  TThreadInfoBlock = record
+    ExceptionList:  Pointer;
+    StackBase:      Pointer;
+    StackLimit:     Pointer;
+    SubSystemTIB:   Pointer;
+    case Integer of
+      0: (FiberData:      Pointer);
+      1: (Version:        UInt32;
+          ArbitraryData:  Pointer;
+          Self:           Pointer);
+  end;
+  PThreadInfoBlock = ^TThreadInfoBlock;
+
+//------------------------------------------------------------------------------
+
+Function GetTIB: PThreadInfoBlock; assembler; register;
+asm
+{$IFDEF x64)}
+    MOV   RAX, qword ptr GS:[$30]
+{$ELSE}
+    MOV   EAX, dword ptr FS:[$18]
+{$ENDIF}
+end;
+
+{$ENDIF}
+//------------------------------------------------------------------------------
+
+{$STACKFRAMES OFF}
+
+Function GetInstructionPointer: Pointer; assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IFDEF x64}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+    MOV   RAX, [RSP]
+{$ELSE}
+    MOV   EAX, [ESP]
+{$ENDIF}
+end;
+
+//------------------------------------------------------------------------------
+
+Function GetStackPointer: Pointer; assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IFDEF x64}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+    MOV   RAX, RSP
+{$ELSE}
+    MOV   EAX, ESP
+{$ENDIF}
+end;
+
+//------------------------------------------------------------------------------
+
+Function GetFramePointer: Pointer; assembler; register;{$IFDEF FPC} nostackframe; {$ENDIF}
+asm
+{$IFDEF x64}
+  {$IFNDEF FPC}.NOFRAME{$ENDIF}
+    MOV   RAX, RBP
+{$ELSE}
+    MOV   EAX, EBP
+{$ENDIF}
+end;
+
+{$IFDEF AE_StackFramesEnabled}
+  {$STACKFRAMES ON}
+{$ENDIF}
 
 {===============================================================================
     EAEExtendedException - class implementation
@@ -1202,6 +1348,97 @@ If Assigned(RaiseSnapshotStorage) then
 else fRegisters.PresentRegisters := [];
 end;
 
+//------------------------------------------------------------------------------
+
+procedure EAEExtendedException.InitStackTrace;
+var
+  FrameCount:   Integer;
+  TempFrame:    TAEStackFrame;
+
+  procedure AddFrame(NewFrame: TAEStackFrame);
+  begin
+    If Length(fStackTrace.StackFrames) <= FrameCount then
+      SetLength(fStackTrace.StackFrames,Length(fStackTrace.StackFrames) + 16);
+    fStackTrace.StackFrames[FrameCount] := NewFrame;
+    Inc(FrameCount);
+  end;
+
+  Function LoadFrame(PrevFrame: TAEStackFrame; out NextFrame: TAEStackFrame): Boolean;
+  type
+    TAEFrameData = packed record
+      FramePointer:       Pointer;
+      InstructionPointer: Pointer;
+    end;
+    PAEFrameData = ^TAEFrameData;
+  begin
+    Result := False;
+  {$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
+  {
+    First check if frame data can fit between previous frame start and the
+    stack top (stack base).
+  }
+    If (PtrUInt(PrevFrame.FrameStart) + SizeOf(TAEFrameData)) <= PtrUInt(fStackTrace.StackTop) then
+      begin
+      {
+        The frame pointer (start) of the next frame must be both below or at
+        the stack top and above or at previous frame start plus frame data.
+      }
+
+        If (PtrUInt(PAEFrameData(PrevFrame.FrameStartInDump)^.FramePointer) <= PtrUInt(fStackTrace.StackTop)) and
+          (PtrUInt(PAEFrameData(PrevFrame.FrameStartInDump)^.FramePointer) >= (PtrUInt(PrevFrame.FrameStart) + SizeOf(TAEFrameData))) then
+          begin
+            NextFrame.FrameStart := PAEFrameData(PrevFrame.FrameStartInDump)^.FramePointer;
+            NextFrame.FrameSize := TMemSize(PtrUInt(NextFrame.FrameStart) - PtrUInt(PrevFrame.FrameStart));
+            NextFrame.ReturnAddress := PAEFrameData(PrevFrame.FrameStartInDump)^.InstructionPointer;
+            NextFrame.FrameStartInDump := Pointer(PtrUInt(PrevFrame.FrameStartInDump) + PtrUInt(NextFrame.FrameSize));
+            Result := True;
+          end;
+      end;
+  {$IFDEF FPCDWM}{$POP}{$ENDIF}
+  end;
+
+begin
+TempFrame.ReturnAddress := GetInstructionPointer;
+TempFrame.FrameStart := GetFramePointer;
+// get stack info
+{$IFDEF Windows}
+fStackTrace.StackTop := GetTIB^.StackBase;
+{$ELSE}
+fStackTrace.StackTop := System.StackTop;
+{$ENDIF}
+fStackTrace.StackBottom := GetStackPointer;
+{$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
+If PtrUInt(fStackTrace.StackTop) >= PtrUInt(fStackTrace.StackBottom) then
+  begin
+    fStackTrace.StackDumpSize := TMemSize(PtrUInt(fStackTrace.StackTop) - PtrUInt(fStackTrace.StackBottom));
+{$IFDEF FPCDWM}{$POP}{$ENDIF}
+    // dump the stack
+    GetMem(fStackTrace.StackDump,fStackTrace.StackDumpSize);
+    Move(fStackTrace.StackBottom^,fStackTrace.StackDump^,fStackTrace.StackDumpSize);
+    // scan the dumped stack
+    SetLength(fStackTrace.StackFrames,0);
+    FrameCount := 0;
+    // add current frame
+  {$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
+    TempFrame.FrameSize := TMemSize(PtrUInt(TempFrame.FrameStart) - PtrUInt(fStackTrace.StackBottom));
+    TempFrame.FrameStartInDump := Pointer(PtrUInt(fStackTrace.StackDump) + PtrUInt(TempFrame.FrameSize));
+  {$IFDEF FPCDWM}{$POP}{$ENDIF}
+    AddFrame(TempFrame);
+    while LoadFrame(TempFrame,TempFrame) do
+      AddFrame(TempFrame);
+    SetLength(fStackTrace.StackFrames,FrameCount);
+  end
+else FillChar(fStackTrace,SizeOf(TAEStackTrace),0);
+end;
+
+//------------------------------------------------------------------------------
+
+procedure EAEExtendedException.Finalize;
+begin
+If Assigned(fStackTrace.StackDump) and (fStackTrace.StackDumpSize <> 0) then
+  FreeMem(fStackTrace.StackDump,fStackTrace.StackDumpSize);
+end;
+
 {-------------------------------------------------------------------------------
     EAEExtendedException - public methods
 -------------------------------------------------------------------------------}
@@ -1212,6 +1449,15 @@ If not Assigned(RaiseSnapshotStorage) then
   RegistersSnapshot;
 inherited CreateFmt(Msg,Args);
 InitRegisters;
+InitStackTrace;
+end;
+
+//------------------------------------------------------------------------------
+
+destructor EAEExtendedException.Destroy;
+begin
+Finalize;
+inherited;
 end;
 
 {$ENDIF}
