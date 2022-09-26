@@ -13,7 +13,7 @@
     AuxExceptions library. It is stored separately to allow for classes
     rebasing.
 
-  Version 1.0.1 (2022-09-26)
+  Version 1.0.2 (2022-09-26)
 
   Last change 2022-09-26
 
@@ -55,6 +55,67 @@
   {$DEFINE PurePascal}
 {$ENDIF}
 
+{
+  AllowExtendedException
+
+  If defined and when other symbols and compilation target allows it, then
+  EGeneralException (and its descendants) are based on EAEExtendedException
+  instead of EAECustomException. Extended exception implements advanced stuff
+  like registers snapshot, stack trace and so on, and therefore enables these
+  functions in all descendant exception classes.
+
+  Defined by default.
+
+  To disable/undefine this symbol in a project without changing this library,
+  define project-wide symbol AuxExceptions_AllowExtendedException_OFF.
+}
+{$DEFINE AllowExtendedException}
+{$IFDEF AuxExceptions_AllowExtendedException_OFF}
+  {$UNDEF AllowExtendedException}
+{$ENDIF}
+
+{
+  ExtendedExceptionRegisters
+
+  When defined, the extended exception will try to create a register snapshot
+  of current processor at its creation. Note that the code is still compiled
+  if this symbol is not defined, it just isn't called.
+  Has no effect when symbol AllowExtendedException is not defined.
+
+  Defined by default.
+
+  To disable/undefine this symbol in a project without changing this library,
+  define project-wide symbol AuxExceptions_ExtendedExceptionRegisters_OFF.
+}
+{$DEFINE ExtendedExceptionRegisters}
+{$IFDEF AuxExceptions_ExtendedExceptionRegisters_OFF}
+  {$UNDEF ExtendedExceptionRegisters}
+{$ENDIF}
+
+{
+  ExtendedExceptionStack
+
+  When defined, the extended exception will create stack dump and a simple
+  stack trace at its creation. Note that the code is still compiled if this
+  symbol is not defined, it just isn't called.
+  Has no effect when symbol AllowExtendedException is not defined.
+
+  Defined by default.
+
+  To disable/undefine this symbol in a project without changing this library,
+  define project-wide symbol AuxExceptions_ExtendedExceptionStack_OFF.
+}
+{$DEFINE ExtendedExceptionStack}
+{$IFDEF AuxExceptions_ExtendedExceptionStack_OFF}
+  {$UNDEF ExtendedExceptionStack}
+{$ENDIF}
+
+{.$DEFINE ExtendedExceptionProcess}
+{.$DEFINE ExtendedExceptionModules}
+{.$DEFINE ExtendedExceptionThreads}
+
+//------------------------------------------------------------------------------
+
 {$IF Defined(CPUX86_64) or Defined(CPUX64)}
   {$DEFINE x64}
 {$ELSEIF Defined(CPU386)}
@@ -80,6 +141,8 @@
   {$MACRO ON}
 {$ENDIF}
 {$H+}
+
+//------------------------------------------------------------------------------
 
 {$IF not Defined(PurePascal) and Defined(AllowExtendedException)}
   {$DEFINE ExtendedException}
@@ -115,8 +178,12 @@ uses
     Common types
 ===============================================================================}
 type
-  TAEThreadID = {$IFDEF Windows}DWORD{$ELSE}pthread_t{$ENDIF};
-  TAESysErrCode = {$IFDEF Windows}DWORD{$ELSE}cInt{$ENDIF};
+  TAEProcessID   = {$IFDEF Windows}DWORD{$ELSE}pid_t{$ENDIF};
+  TAEThreadID    = {$IFDEF Windows}DWORD{$ELSE}pid_t{$ENDIF};
+{$IFNDEF Windows}
+  TAELibThreadID = pthread_t;
+{$ENDIF}
+  TAESysErrCode  = {$IFDEF Windows}DWORD{$ELSE}cInt{$ENDIF};
 
 {===============================================================================
 --------------------------------------------------------------------------------
@@ -129,14 +196,22 @@ type
 type
   EAECustomException = class(EAEBaseException)
   protected
-    fTime:      TDateTime;
-    fThreadID:  TAEThreadID;
-    fExcAddr:   Pointer;
+    fTime:        TDateTime;
+    fProcessID:   TAEProcessID;
+    fThreadID:    TAEThreadID;
+  {$IFNDEF Windows}
+    fLibThreadID: TAELibThreadID;
+  {$ENDIF}
+    fExcAddr:     Pointer;
   public
     constructor CreateFmt(const Msg: String; Args: array of const);
     constructor Create(const Msg: String);
     property Time: TDateTime read fTime;
+    property ProcessID: TAEProcessID read fProcessID;
     property ThreadID: TAEThreadID read fThreadID;
+  {$IFNDEF Windows}
+    property LibThreadID: TAELibThreadID read fLibThreadID;
+  {$ENDIF}
     property ExceptAddress: Pointer read fExcAddr;
   end;
 
@@ -543,7 +618,7 @@ type
 {$IFDEF FPC}{$PUSH}{$WARN 2005 OFF}{$ENDIF}
 {$IFDEF AE_Include_Implementation_Uses}
 uses
-  Variants{$IFDEF Windows}{$ELSE}, pthreads{$ENDIF}
+  Variants{$IFNDEF Windows}, pthreads, syscall{$ENDIF}
   {$IFDEF ExtendedException}, SimpleCPUID{$ENDIF};
 
 {$IFDEF FPC_DisableWarns}
@@ -567,6 +642,26 @@ uses
 ===============================================================================}
 
 {$IFDEF AE_Include_Implementation}
+{===============================================================================
+--------------------------------------------------------------------------------
+                               External functions
+--------------------------------------------------------------------------------
+===============================================================================}
+{===============================================================================
+    External functions - implementation
+===============================================================================}
+{$IFNDEF Windows}
+
+function getpid: pid_t; cdecl; external;
+
+//------------------------------------------------------------------------------
+
+Function gettid: pid_t;
+begin
+Result := do_syscall(syscall_nr_gettid);
+end;
+
+{$ENDIF}
 
 {$IFDEF ExtendedException}
 {===============================================================================
@@ -1106,9 +1201,12 @@ begin
 inherited CreateFmt(Msg,Args);
 fTime := Now;
 {$IFDEF Windows}
+fProcessID := Windows.GetCurrentProcessID;
 fThreadID := Windows.GetCurrentThreadID;
 {$ELSE}
-fThreadID := pthread_self;
+fProcessID := getpid;
+fThreadID := gettid;
+fLibThreadID := pthread_self;
 {$ENDIF}
 fExcAddr := ExceptAddr;
 end;
@@ -1448,8 +1546,16 @@ begin
 If not Assigned(RaiseSnapshotStorage) then
   RegistersSnapshot;
 inherited CreateFmt(Msg,Args);
+{$IFDEF ExtendedExceptionRegisters}
 InitRegisters;
+{$ELSE}
+fRegisters.PresentRegisters := [];
+{$ENDIF}
+{$IFDEF ExtendedExceptionStack}
 InitStackTrace;
+{$ELSE}
+FillChar(fStackTrace,SizeOf(TAEStackTrace),0);
+{$ENDIF}
 end;
 
 //------------------------------------------------------------------------------

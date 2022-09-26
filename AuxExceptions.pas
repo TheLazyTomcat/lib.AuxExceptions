@@ -46,8 +46,7 @@
         in-dump), size and return address (corresponds to an address inside of
         function that was using this stack frame) are stored.
 
-
-  Version 1.0.1 (2022-09-26)
+  Version 1.0.2 (2022-09-26)
 
   Last change 2022-09-26
 
@@ -77,24 +76,6 @@
 
 ===============================================================================}
 unit AuxExceptions;
-{
-  AllowExtendedException
-
-  If defined and when other symbols and compilation target allows it, then
-  EGeneralException (and its descendants) are based on EAEExtendedException
-  instead of EAECustomException. Extended exception implements advanced stuff
-  like registers snapshot, stack trace and so on, and therefore enables these
-  functions in all descendant exception classes.
-
-  Defined by default.
-
-  To disable/undefine this symbol in a project without changing this library,
-  define project-wide symbol AuxExceptions_AllowExtendedException_OFF.
-}
-{$DEFINE AllowExtendedException}
-{$IFDEF AuxExceptions_AllowExtendedException_OFF}
-  {$UNDEF AllowExtendedException}
-{$ENDIF}
 
 {$DEFINE AE_Include_Defs}
   {$INCLUDE '.\AuxExceptions.inc'}
