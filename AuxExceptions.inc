@@ -78,8 +78,8 @@
   ExtendedExceptionRegisters
 
   When defined, the extended exception will try to create a register snapshot
-  of current processor at its creation. Note that the code is still compiled
-  if this symbol is not defined, it just isn't called.
+  of current processor at its creation.
+
   Has no effect when symbol AllowExtendedException is not defined.
 
   Defined by default.
@@ -96,8 +96,8 @@
   ExtendedExceptionStack
 
   When defined, the extended exception will create stack dump and a simple
-  stack trace at its creation. Note that the code is still compiled if this
-  symbol is not defined, it just isn't called.
+  stack trace at its creation.
+
   Has no effect when symbol AllowExtendedException is not defined.
 
   Defined by default.
@@ -110,8 +110,45 @@
   {$UNDEF ExtendedExceptionStack}
 {$ENDIF}
 
-{.$DEFINE ExtendedExceptionProcess}
-{.$DEFINE ExtendedExceptionModules}
+{
+  ExtendedExceptionProcess
+
+  When defined, the extended exception will obtain a set of information about
+  the executable file of current process.
+
+  Has no effect when symbol AllowExtendedException is not defined.
+
+  Not defined by default.
+
+  To enable/define this symbol in a project without changing this library,
+  define project-wide symbol AuxExceptions_ExtendedExceptionProcess_ON.
+}
+{$UNDEF ExtendedExceptionProcess}
+{$IFDEF AuxExceptions_ExtendedExceptionProcess_ON}
+  {$DEFINE ExtendedExceptionProcess}
+{$ENDIF}
+{$DEFINE ExtendedExceptionProcess}{$message 'dev - remove'}
+
+{
+  ExtendedExceptionModules
+
+  When defined, the extended exception will compile a list of all modules
+  loaded in the process memory.
+
+  Has no effect when symbol AllowExtendedException is not defined.
+
+  Not defined by default.
+
+  To enable/define this symbol in a project without changing this library,
+  define project-wide symbol AuxExceptions_ExtendedExceptionModules_ON.
+}
+{$UNDEF ExtendedExceptionModules}
+{$IFDEF AuxExceptions_ExtendedExceptionModules_ON}
+  {$DEFINE ExtendedExceptionModules}
+{$ENDIF}
+{$DEFINE ExtendedExceptionModules}{$message 'dev - remove'}
+
+
 {.$DEFINE ExtendedExceptionThreads}
 
 //------------------------------------------------------------------------------
@@ -164,8 +201,8 @@
 
 {$IFDEF AE_Include_Interface_Uses}
 uses
-  SysUtils{$IFDEF Windows}, Windows{$ELSE}, BaseUnix{$ENDIF}
-  {$IFDEF ExtendedException}, AuxTypes{$ENDIF};
+  SysUtils {$IFDEF Windows}, Windows{$ELSE}, BaseUnix{$ENDIF}
+  {$IFDEF ExtendedException}, AuxTypes, WinFileInfo{$ENDIF};
 
 {$ENDIF AE_Include_Interface_Uses}
 
@@ -418,6 +455,57 @@ type
     StackFrames:    array of TAEStackFrame;
   end;
 
+{-------------------------------------------------------------------------------
+    EAEExtendedException - public storage types - process
+-------------------------------------------------------------------------------}
+type
+  TAEProcessInfo = record
+    ProcessID:    TAEProcessID;
+    ExecFileName: String;
+    FileInfo:     TWinFileInfo;
+  end;
+
+{-------------------------------------------------------------------------------
+    EAEExtendedException - public storage types - modules
+-------------------------------------------------------------------------------}
+{
+  Windows
+
+    BaseAddress is the address at which the module is loaded.
+    ExecMemory is set to the same value as BaseAddress.
+    ExecSize is set to the module size obtained when enumerating modules (which
+    does NOT correspond to actual size of the module file on disk, but rather
+    in memory).
+    ExecContiguous is alway true.
+
+  Linux
+
+    BaseAddress is address of the first memory block into which the module is
+    mapped.
+    ExecMemory is address of the first memory block with execute permission
+    into which the module is mapped.
+    ExecSize is the size of all memory blocks with execute permission in which
+    the module is mapped.
+    ExecContiguous is set to true when all memory blocks with execute permission
+    are contiguous, false otherwise.
+
+      NOTE - in Linux, the modules are obtained by parsing a text file
+             "proc/[pid]/maps", where pid is ID of the current process.
+}
+type
+  TAEModuleInfo = record
+    ModuleFileName: String; // full path
+    BaseAddress:    Pointer;
+    ExecMemory:     Pointer;
+    ExecSize:       TMemSize;
+    ExecContiguous: Boolean;
+    FileInfo:       TWinFileInfo;
+  end;
+
+  TAEModulesInfo = record
+    Modules:  array of TAEModuleInfo;
+  end;
+
 {===============================================================================
     EAEExtendedException - class declaration
 ===============================================================================}
@@ -426,14 +514,20 @@ type
   protected
     fRegisters:   TAERegisters;
     fStackTrace:  TAEStackTrace;
+    fProcessInfo: TAEProcessInfo;
+    fModulesInfo: TAEModulesInfo;
     procedure InitRegisters; virtual;
     procedure InitStackTrace; virtual;
+    procedure InitProcessInfo; virtual;
+    procedure InitModulesInfo; virtual;
     procedure Finalize; virtual;
   public
     constructor CreateFmt(const Msg: String; Args: array of const);
     destructor Destroy; override;
     property Registers: TAERegisters read fRegisters;
     property StackTrace: TAEStackTrace read fStackTrace;
+    property ProcessInfo: TAEProcessInfo read fProcessInfo;
+    property ModulesInfo: TAEModulesInfo read fModulesInfo;
   end;
 
 {$ENDIF ExtendedException}
@@ -618,12 +712,21 @@ type
 {$IFDEF FPC}{$PUSH}{$WARN 2005 OFF}{$ENDIF}
 {$IFDEF AE_Include_Implementation_Uses}
 uses
-  Variants{$IFNDEF Windows}, pthreads, syscall{$ENDIF}
-  {$IFDEF ExtendedException}, SimpleCPUID{$ENDIF};
+  Variants {$IFDEF Windows}{$ELSE}, syscall, pthreads{$ENDIF}
+{$IFDEF ExtendedException}
+  {$IFDEF Windows}
+    ,{$IFDEF FPC}jwaTlHelp32{$ELSE}TlHelp32{$ENDIF}, StrRect
+    {$ELSE}
+    , Classes, StrUtils, UInt64Utils
+  {$ENDIF}, SimpleCPUID
+{$ENDIF};
+
+//------------------------------------------------------------------------------
 
 {$IFDEF FPC_DisableWarns}
   {$DEFINE FPCDWM}
   {$DEFINE W4055:={$WARN 4055 OFF}}   // Conversion between ordinals and pointers is not portable
+  {$DEFINE W4056:={$WARN 4056 OFF}}   // Conversion between ordinals and pointers is not portable
   {$DEFINE W7102:={$WARN 7102 OFF}}   // Use of +offset(%ebp) for parameters invalid here
   {$PUSH}{$WARN 2005 OFF}             // Comment level $1 found
   {$IF Defined(FPC) and (FPC_FULLVERSION >= 30000)}
@@ -662,6 +765,40 @@ Result := do_syscall(syscall_nr_gettid);
 end;
 
 {$ENDIF}
+
+{===============================================================================
+--------------------------------------------------------------------------------
+                               EAECustomException
+--------------------------------------------------------------------------------
+===============================================================================}
+{===============================================================================
+    EAECustomException - class implementation
+===============================================================================}
+{-------------------------------------------------------------------------------
+    EAECustomException - public methods
+-------------------------------------------------------------------------------}
+
+constructor EAECustomException.CreateFmt(const Msg: String; Args: array of const);
+begin
+inherited CreateFmt(Msg,Args);
+fTime := Now;
+{$IFDEF Windows}
+fProcessID := Windows.GetCurrentProcessID;
+fThreadID := Windows.GetCurrentThreadID;
+{$ELSE}
+fProcessID := getpid;
+fThreadID := gettid;
+fLibThreadID := pthread_self;
+{$ENDIF}
+fExcAddr := ExceptAddr;
+end;
+
+//------------------------------------------------------------------------------
+
+constructor EAECustomException.Create(const Msg: String);
+begin
+CreateFmt(Msg,[]);
+end;
 
 {$IFDEF ExtendedException}
 {===============================================================================
@@ -1044,7 +1181,7 @@ asm
     POP     EAX
     MOV     dword ptr [Data.FLAGS], EAX
 {$ENDIF}
-  
+
     // segments
     MOV     word ptr [Data.SG], CS
     MOV     word ptr [Data.SG + 2], DS
@@ -1182,44 +1319,240 @@ end;
   {$STACKFRAMES OFF}
 {$ENDIF}
 
-{$ENDIF}
-
+{$IFNDEF Windows}
 {===============================================================================
 --------------------------------------------------------------------------------
-                               EAECustomException
+                                  TAEMapsParser
 --------------------------------------------------------------------------------
 ===============================================================================}
+{
+  Format of lines in maps file:
+
+    start_addr-end_addr permstr offset dev_major:dev_minor inode   pathname
+}
+type
+  TAEMapsPermission = (permRead,permWrite,permExecute,permShared,permPrivate);
+  TAEMapsPermissions = set of TAEMapsPermission;
+
+type
+  TAEMapsLine = record
+    StartAddr:    Pointer;
+    EndAddr:      Pointer;
+    PermStr:      String;
+    Permissions:  TAEMapsPermissions;
+    Offset:       TMemSize;
+    DeviceMajor:  Integer;
+    DeviceMinor:  Integer;
+    iNode:        UInt64;
+    PathName:     String;
+  end;
+
+  TAEMapsModule = array of TAEMapsLine;
+
+  TAEMapsModules = array of TAEMapsModule;
+
+type
+  TAEMapsParseLineStage = (mplsStartAddr,mplsEndAddr,mplsPerms,mplsOffset,
+                           mplsDevMajor,mplsDevMinor,mplsINode,mplsPathName,
+                           mplsDone);
+
 {===============================================================================
-    EAECustomException - class implementation
+    TAEMapsParser - class declaration
+===============================================================================}
+type
+  TAEMapsParser = class(TObject)
+  protected
+    fMapsModules:     TAEMapsModules;
+    // line parsing variables
+    fParsLineStr:     String;
+    fParsStage:       TAEMapsParseLineStage;
+    fParsCurrDelim:   Char;
+    fParsPosition:    TStrOff;
+    fParsTokenStart:  TStrOff;
+    fParsTokenLength: TStrSize;
+    fParsMapsLine:    TAEMapsLine;
+    Function ParseLineProcessToken(const TokenStr: String): Boolean; virtual;
+    Function ParseLine(const LineStr: String): Boolean; virtual;
+  public
+    procedure AddLine(const LineStr: String); virtual;
+    property MapsModules: TAEMapsModules read fMapsModules;
+  end;
+
+{===============================================================================
+    TAEMapsParser - class implementation
 ===============================================================================}
 {-------------------------------------------------------------------------------
-    EAECustomException - public methods
+    TAEMapsParser - protected methods
 -------------------------------------------------------------------------------}
 
-constructor EAECustomException.CreateFmt(const Msg: String; Args: array of const);
+Function TAEMapsParser.ParseLineProcessToken(const TokenStr: String): Boolean;
+var
+  Temp64: UInt64;
+  Temp:   Integer;
 begin
-inherited CreateFmt(Msg,Args);
-fTime := Now;
-{$IFDEF Windows}
-fProcessID := Windows.GetCurrentProcessID;
-fThreadID := Windows.GetCurrentThreadID;
-{$ELSE}
-fProcessID := getpid;
-fThreadID := gettid;
-fLibThreadID := pthread_self;
-{$ENDIF}
-fExcAddr := ExceptAddr;
+fParsCurrDelim := ' ';
+case fParsStage of
+  mplsStartAddr:  begin
+                    Result := TryStrToUInt64('$' + Trim(TokenStr),Temp64);
+                    If Result then
+                      begin
+                      {$IFDEF FPCDWM}{$PUSH}W4055 W4056{$ENDIF}
+                        fParsMapsLine.StartAddr := Pointer(Temp64);
+                      {$IFDEF FPCDWM}{$POP}{$ENDIF}
+                        fParsStage := mplsEndAddr;
+                      end;
+                  end;
+  mplsEndAddr:    begin
+                    Result := TryStrToUInt64('$' + Trim(TokenStr),Temp64);
+                    If Result then
+                      begin
+                      {$IFDEF FPCDWM}{$PUSH}W4055 W4056{$ENDIF}
+                        fParsMapsLine.EndAddr := Pointer(Temp64);
+                      {$IFDEF FPCDWM}{$POP}{$ENDIF}
+                        fParsStage := mplsPerms;
+                        end;
+                  end;
+  mplsPerms:      begin
+                    fParsMapsLine.PermStr := Trim(TokenStr);
+                    fParsMapsLine.Permissions := [];
+                    If AnsiContainsText(fParsMapsLine.PermStr,'r') then
+                      Include(fParsMapsLine.Permissions,permRead);
+                    If AnsiContainsText(fParsMapsLine.PermStr,'w') then
+                      Include(fParsMapsLine.Permissions,permWrite);
+                    If AnsiContainsText(fParsMapsLine.PermStr,'x') then
+                      Include(fParsMapsLine.Permissions,permExecute);
+                    If AnsiContainsText(fParsMapsLine.PermStr,'s') then
+                      Include(fParsMapsLine.Permissions,permShared);
+                    If AnsiContainsText(fParsMapsLine.PermStr,'p') then
+                      Include(fParsMapsLine.Permissions,permPrivate);
+                    fParsStage := mplsOffset;
+                    Result := True;
+                  end;
+  mplsOffset:      begin
+                    Result := TryStrToUInt64('$' + Trim(TokenStr),Temp64);
+                    If Result then
+                      begin
+                        fParsMapsLine.Offset := TMemSize(Temp64);
+                        fParsStage := mplsDevMajor;
+                        fParsCurrDelim := ':';
+                      end;
+                  end;
+  mplsDevMajor:   begin
+                    Result := TryStrToInt('$' + Trim(TokenStr),Temp);
+                    If Result then
+                      begin
+                        fParsMapsLine.DeviceMajor := Temp;
+                        fParsStage := mplsDevMinor;
+                      end;
+                  end;
+  mplsDevMinor:   begin
+                    Result := TryStrToInt('$' + Trim(TokenStr),Temp);
+                    If Result then
+                      begin
+                        fParsMapsLine.DeviceMinor := Temp;
+                        fParsStage := mplsINode;
+                      end;
+                  end;
+  mplsINode:      begin
+                    Result := TryStrToUInt64('$' + Trim(TokenStr),Temp64);
+                    If Result then
+                      begin
+                        fParsMapsLine.iNode := Temp64;
+                        fParsStage := mplsPathName;
+                      end;
+                  end;
+  mplsPathName:   begin
+                    fParsMapsLine.PathName := Trim(TokenStr);
+                    fParsStage := mplsDone;
+                    If Length(fParsMapsLine.PathName) > 0 then
+                      Result := not(AnsiStartsText('[',fParsMapsLine.PathName) and
+                                    AnsiEndsText(']',fParsMapsLine.PathName)) and
+                                not AnsiEndsText('(deleted)',fParsMapsLine.PathName)
+                    else
+                      Result := False;
+                  end;
+else
+ {mlpsDone}
+  Result := False;
+end;
 end;
 
 //------------------------------------------------------------------------------
 
-constructor EAECustomException.Create(const Msg: String);
+Function TAEMapsParser.ParseLine(const LineStr: String): Boolean;
 begin
-CreateFmt(Msg,[]);
+Result := False;
+fParsLineStr := LineStr;
+fParsStage := mplsStartAddr;
+fParsCurrDelim := '-';
+fParsPosition := 1;
+fParsTokenStart := 1;
+fParsTokenLength := 0;
+while (fParsPosition <= Length(fParsLineStr)) and (fParsStage < mplsPathName) do
+  begin
+    If fParsLineStr[fParsPosition] = fParsCurrDelim then
+      begin
+        // Processtoken also changes fParsStage and fParsCurrDelim
+        If not ParseLineProcessToken(Copy(fParsLineStr,fParsTokenStart,fParsTokenLength)) then
+          Exit;
+        fParsTokenStart := Succ(fParsPosition);
+        fParsTokenLength := 0;
+      end
+    else Inc(fParsTokenLength);
+    Inc(fParsPosition);
+  end;
+If ParseLineProcessToken(Copy(fParsLineStr,fParsTokenStart,Length(fParsLineStr))) then
+  Result := fParsStage = mplsDone;
 end;
 
+{-------------------------------------------------------------------------------
+    TAEMapsParser - public methods
+-------------------------------------------------------------------------------}
 
-{$IFDEF ExtendedException}
+procedure TAEMapsParser.AddLine(const LineStr: String);
+var
+  i:        Integer;
+  ModIdx:   Integer;
+  AddrIdx:  Integer;
+begin
+If ParseLine(LineStr) then
+  begin
+    // find if this module is already listed
+    ModIdx := -1;
+    For i := Low(fMapsModules) to High(fMapsModules) do
+      If Length(fMapsModules[i]) > 0 then
+        If AnsiSameText(fMapsModules[i,0].PathName,fParsMapsLine.PathName) then
+          begin
+            ModIdx := i;
+            Break{For i};
+          end;
+    If ModIdx < 0 then
+      begin
+        // this module is not yet listed
+      {
+        I know growing by one is far from being optimal, ok! But this code is
+        not time-critical and I don't feel like keeping some counters around.
+      }
+        SetLength(fMapsModules,Length(fMapsModules) + 1);
+        ModIdx := High(fMapsModules);
+      end;
+    // add this module and make sure the sublist is ordered by start addresses
+    AddrIdx := Length(fMapsModules[ModIdx]);
+    For i := Low(fMapsModules[ModIdx]) to High(fMapsModules[ModIdx]) do
+      If fMapsModules[ModIdx,i].StartAddr > fParsMapsLine.StartAddr then
+        begin
+          AddrIdx := i;
+          Break{For i};
+        end;
+    SetLength(fMapsModules[ModIdx],Length(fMapsModules[ModIdx]) + 1);
+    For i := High(fMapsModules[ModIdx]) downto Succ(AddrIdx) do
+      fMapsModules[ModIdx,i] := fMapsModules[ModIdx,Pred(i)];
+    fMapsModules[ModIdx,AddrIdx] := fParsMapsLine;
+  end;
+end;
+
+{$ENDIF Windows}
+
 {===============================================================================
 --------------------------------------------------------------------------------
                                EAEExtendedException
@@ -1531,10 +1864,132 @@ end;
 
 //------------------------------------------------------------------------------
 
+procedure EAEExtendedException.InitProcessInfo;
+begin
+fProcessInfo.ProcessID := fProcessID;
+fProcessInfo.ExecFileName := ParamStr(0);
+fProcessInfo.FileInfo := TWinFileInfo.Create(fProcessInfo.ExecFileName,WFI_LS_All);
+end;
+
+//------------------------------------------------------------------------------
+
+procedure EAEExtendedException.InitModulesInfo;
+{$IFDEF Windows}
+var
+  HelpSnapshot: THandle;
+  ModuleEntry:  TModuleEntry32W;
+  ModuleCount:  Integer;
+
+  procedure AddModuleInfoFromEntry;
+  begin
+    // grow the list
+    If Length(fModulesInfo.Modules) <= ModuleCount then
+      SetLength(fModulesInfo.Modules,Length(fModulesInfo.Modules) + 16);
+    // copy and get data
+    fModulesInfo.Modules[ModuleCount].ModuleFileName := WideToStr(ModuleEntry.szExePath);
+    fModulesInfo.Modules[ModuleCount].BaseAddress := Pointer(ModuleEntry.modBaseAddr);
+    fModulesInfo.Modules[ModuleCount].ExecMemory := Pointer(ModuleEntry.modBaseAddr);
+    fModulesInfo.Modules[ModuleCount].ExecSize := TMemSize(ModuleEntry.modBaseSize);
+    fModulesInfo.Modules[ModuleCount].ExecContiguous := True;
+    fModulesInfo.Modules[ModuleCount].FileInfo := TWinFileInfo.Create(
+      fModulesInfo.Modules[ModuleCount].ModuleFileName,WFI_LS_All);
+    Inc(ModuleCount);
+  end;
+
+begin
+HelpSnapshot := CreateToolhelp32Snapshot(TH32CS_SNAPMODULE,0{current process});
+If HelpSnapshot <> INVALID_HANDLE_VALUE then
+  begin
+    ModuleCount := 0;
+    SetLength(fModulesInfo.Modules,0);
+    ModuleEntry.dwSize := SizeOf(TModuleEntry32W);
+    // enum the modules
+    If Module32FirstW(HelpSnapshot,ModuleEntry) then
+      repeat
+        AddModuleInfoFromEntry;
+      until not Module32NextW(HelpSnapshot,ModuleEntry);
+    SetLength(fModulesInfo.Modules,ModuleCount);
+    CloseHandle(HelpSnapshot);
+  end
+else FillChar(fModulesInfo,SizeOf(TAEModulesInfo),0);
+end;
+{$ELSE}
+var
+  MapsFile:     TStringList;
+  MapsParser:   TAEMapsParser;
+  i,j:          Integer;
+  LastExecEnd:  Pointer;
+begin
+MapsFile := TStringList.Create;
+try
+  MapsFile.LoadFromFile(Format('/proc/%u/maps',[fProcessID]));
+  MapsParser := TAEMapsParser.Create;
+  try
+    For i := 0 to Pred(MapsFile.Count) do
+      MapsParser.AddLine(MapsFile[i]);
+    // get individual modules info
+    SetLength(fModulesInfo.Modules,Length(MapsParser.MapsModules));
+    For i := Low(fModulesInfo.Modules) to High(fModulesInfo.Modules) do
+      begin
+        fModulesInfo.Modules[i].ModuleFileName := MapsParser.MapsModules[i,0].PathName;
+        fModulesInfo.Modules[i].BaseAddress := MapsParser.MapsModules[i,0].StartAddr;
+        // get info about executable memory
+        fModulesInfo.Modules[i].ExecMemory := nil;
+        fModulesInfo.Modules[i].ExecSize := 0;
+        fModulesInfo.Modules[i].ExecContiguous := True;
+        LastExecEnd := nil;
+        For j := Low(MapsParser.MapsModules[i]) to High(MapsParser.MapsModules[i]) do
+          If permExecute in MapsParser.MapsModules[i,j].Permissions then
+            begin
+              If not Assigned(fModulesInfo.Modules[i].ExecMemory) then
+                fModulesInfo.Modules[i].ExecMemory := MapsParser.MapsModules[i,j].StartAddr;
+              fModulesInfo.Modules[i].ExecSize := fModulesInfo.Modules[i].ExecSize +
+            {$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
+                TMemSize(PtrUInt(MapsParser.MapsModules[i,j].EndAddr) - PtrUInt(MapsParser.MapsModules[i,j].StartAddr));
+            {$IFDEF FPCDWM}{$POP}{$ENDIF}
+              If Assigned(LastExecEnd) then
+                If LastExecEnd <> MapsParser.MapsModules[i,j].StartAddr then
+                  fModulesInfo.Modules[i].ExecContiguous := False;
+              LastExecEnd := MapsParser.MapsModules[i,j].EndAddr;
+            end;
+        // get file info
+        fModulesInfo.Modules[i].FileInfo := TWinFileInfo.Create(
+          fModulesInfo.Modules[i].ModuleFileName,WFI_LS_ALL);
+      end;
+    {
+      Remove all files that do not have any executable memory - we are assuming
+      they are not true binary executable modules, but ordinary memory mapped
+      files.
+    }
+    For i := High(fModulesInfo.Modules) downto Low(fModulesInfo.Modules) do
+      If fModulesInfo.Modules[i].ExecSize <= 0 then
+        begin
+          fModulesInfo.Modules[i].FileInfo.Free;
+          For j := i to Pred(High(fModulesInfo.Modules)) do
+             fModulesInfo.Modules[i] := fModulesInfo.Modules[i + 1];
+          SetLength(fModulesInfo.Modules,Length(fModulesInfo.Modules) - 1);
+        end;
+  finally
+    MapsParser.Free;
+  end;
+finally
+  MapsFile.Free;
+end;
+end;
+{$ENDIF}
+
+//------------------------------------------------------------------------------
+
 procedure EAEExtendedException.Finalize;
+var
+  i:  Integer;
 begin
 If Assigned(fStackTrace.StackDump) and (fStackTrace.StackDumpSize <> 0) then
   FreeMem(fStackTrace.StackDump,fStackTrace.StackDumpSize);
+If Assigned(fProcessInfo.FileInfo) then
+  fProcessInfo.FileInfo.Free;
+For i := Low(fModulesInfo.Modules) to High(fModulesInfo.Modules) do
+  fModulesInfo.Modules[i].FileInfo.Free;
 end;
 
 {-------------------------------------------------------------------------------
@@ -1546,15 +2001,33 @@ begin
 If not Assigned(RaiseSnapshotStorage) then
   RegistersSnapshot;
 inherited CreateFmt(Msg,Args);
+// registers snapshot
 {$IFDEF ExtendedExceptionRegisters}
 InitRegisters;
 {$ELSE}
 fRegisters.PresentRegisters := [];
 {$ENDIF}
+// stack trace
 {$IFDEF ExtendedExceptionStack}
 InitStackTrace;
 {$ELSE}
 FillChar(fStackTrace,SizeOf(TAEStackTrace),0);
+{$ENDIF}
+// process file info
+{$IFDEF ExtendedExceptionProcess}
+InitProcessInfo;
+{$ELSE}
+FillChar(fProcessInfo,SizeOf(TAEProcessInfo),0);
+{$ENDIF}
+// modules info
+{$IFDEF ExtendedExceptionModules}
+InitModulesInfo;
+{$ELSE}
+FillChar(fModulesInfo,SizeOf(TAEModulesInfo),0);
+{$ENDIF}
+// threads info
+{$IFDEF ExtendedExceptionThreads}
+{$ELSE}
 {$ENDIF}
 end;
 
@@ -1566,8 +2039,7 @@ Finalize;
 inherited;
 end;
 
-{$ENDIF}
-
+{$ENDIF ExtendedException}
 
 {===============================================================================
 --------------------------------------------------------------------------------
