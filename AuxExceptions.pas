@@ -25,7 +25,7 @@
     Depending on defined symbols and compilation target, the implemented
     exception classes can also provide some more advanced information, eg.
     processor registers snapshot, simple stack trace, list of loaded modules
-    and more (only registers and stack trace are currently implemented).
+    and more.
 
       Registers snapshot:
 
@@ -46,7 +46,7 @@
         in-dump), size and return address (corresponds to an address inside of
         function that was using this stack frame) are stored.
 
-  Version 1.0.2 (2022-09-26)
+  Version 1.1 (2022-09-26)
 
   Last change 2022-09-26
 
@@ -69,10 +69,16 @@
   Dependencies:
   * AuxTypes    - github.com/TheLazyTomcat/Lib.AuxTypes
   * SimpleCPUID - github.com/TheLazyTomcat/Lib.SimpleCPUID
+  * StrRect     - github.com/TheLazyTomcat/Lib.StrRect
+  * UInt64Utils - github.com/TheLazyTomcat/Lib.UInt64Utils
+  * WinFileInfo - github.com/TheLazyTomcat/Lib.WinFileInfo
 
-  Libraries AuxTypes and SimpleCPUID are required only when compiling for IA32
-  or AMD64 CPU, PurePascal is not defined and symbol AllowExtendedException
+  Libraries AuxTypes, SimpleCPUID and WinFileInfo are required only when
+  PurePascal is not defined (note it might be automatically defined, depending
+  on taget CPU, see source code for details) and symbol AllowExtendedException
   is defined.
+  In addition, StrRect is only required when compiling for Windows and
+  UInt64Utils only for Linux OS.
 
 ===============================================================================}
 unit AuxExceptions;

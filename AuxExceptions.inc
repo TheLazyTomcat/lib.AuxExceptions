@@ -13,9 +13,9 @@
     AuxExceptions library. It is stored separately to allow for classes
     rebasing.
 
-  Version 1.0.2 (2022-09-26)
+  Version 1.1 (2022-09-26)
 
-  Last change 2022-09-26
+  Last change 2022-09-30
 
   ©2019-2022 František Milt
 
@@ -36,10 +36,16 @@
   Dependencies:
   * AuxTypes    - github.com/TheLazyTomcat/Lib.AuxTypes
   * SimpleCPUID - github.com/TheLazyTomcat/Lib.SimpleCPUID
+  * StrRect     - github.com/TheLazyTomcat/Lib.StrRect
+  * UInt64Utils - github.com/TheLazyTomcat/Lib.UInt64Utils
+  * WinFileInfo - github.com/TheLazyTomcat/Lib.WinFileInfo
 
-  Libraries AuxTypes and SimpleCPUID are required only when compiling for IA32
-  or AMD64 CPU, PurePascal is not defined and symbol AllowExtendedException
+  Libraries AuxTypes, SimpleCPUID and WinFileInfo are required only when
+  PurePascal is not defined (note it might be automatically defined, depending
+  on taget CPU, see source code for details) and symbol AllowExtendedException
   is defined.
+  In addition, StrRect is only required when compiling for Windows and
+  UInt64Utils only for Linux OS.
 
 ===============================================================================}
 {$IFDEF AE_Include_Defs}
@@ -128,6 +134,26 @@
   {$DEFINE ExtendedExceptionProcess}
 {$ENDIF}
 {$DEFINE ExtendedExceptionProcess}{$message 'dev - remove'}
+
+{
+  ExtendedExceptionModule
+
+  When defined, the extended exception will obtain information about the
+  current module (be it executable or dynamic library) in which the exception
+  was created/raised.
+
+  Has no effect when symbol AllowExtendedException is not defined.
+
+  Not defined by default.
+
+  To enable/define this symbol in a project without changing this library,
+  define project-wide symbol AuxExceptions_ExtendedExceptionModule_ON.
+}
+{$UNDEF ExtendedExceptionModule}
+{$IFDEF AuxExceptions_ExtendedExceptionModule_ON}
+  {$DEFINE ExtendedExceptionModule}
+{$ENDIF}
+{$DEFINE ExtendedExceptionModule}{$message 'dev - remove'}
 
 {
   ExtendedExceptionModules
@@ -466,6 +492,15 @@ type
   end;
 
 {-------------------------------------------------------------------------------
+    EAEExtendedException - public storage types - current module
+-------------------------------------------------------------------------------}
+type
+  TAECurrModuleInfo = record
+    FileName: String;
+    FileInfo: TWinFileInfo;
+  end;
+
+{-------------------------------------------------------------------------------
     EAEExtendedException - public storage types - modules
 -------------------------------------------------------------------------------}
 {
@@ -506,6 +541,18 @@ type
     Modules:  array of TAEModuleInfo;
   end;
 
+{-------------------------------------------------------------------------------
+    EAEExtendedException - public storage types - threads
+-------------------------------------------------------------------------------}
+type
+  TAEThreadInfo = record
+    ThreadID: TAEThreadID;
+  end;
+
+  TAEThreadsInfo = record
+    Threads:  array of TAEThreadInfo;
+  end;
+
 {===============================================================================
     EAEExtendedException - class declaration
 ===============================================================================}
@@ -515,10 +562,12 @@ type
     fRegisters:   TAERegisters;
     fStackTrace:  TAEStackTrace;
     fProcessInfo: TAEProcessInfo;
+    fModuleInfo:  TAECurrModuleInfo;
     fModulesInfo: TAEModulesInfo;
     procedure InitRegisters; virtual;
     procedure InitStackTrace; virtual;
     procedure InitProcessInfo; virtual;
+    procedure InitModuleInfo; virtual;
     procedure InitModulesInfo; virtual;
     procedure Finalize; virtual;
   public
@@ -527,6 +576,7 @@ type
     property Registers: TAERegisters read fRegisters;
     property StackTrace: TAEStackTrace read fStackTrace;
     property ProcessInfo: TAEProcessInfo read fProcessInfo;
+    property ModuleInfo: TAECurrModuleInfo read fModuleInfo;
     property ModulesInfo: TAEModulesInfo read fModulesInfo;
   end;
 
@@ -715,9 +765,9 @@ uses
   Variants {$IFDEF Windows}{$ELSE}, syscall, pthreads{$ENDIF}
 {$IFDEF ExtendedException}
   {$IFDEF Windows}
-    ,{$IFDEF FPC}jwaTlHelp32{$ELSE}TlHelp32{$ENDIF}, StrRect
-    {$ELSE}
-    , Classes, StrUtils, UInt64Utils
+    ,{$IFDEF FPC}jwaTlHelp32, jwaPsApi{$ELSE}TlHelp32, PsApi{$ENDIF}, StrRect
+  {$ELSE}
+    , Classes, dl, StrUtils, UInt64Utils
   {$ENDIF}, SimpleCPUID
 {$ENDIF};
 
@@ -1873,6 +1923,37 @@ end;
 
 //------------------------------------------------------------------------------
 
+procedure EAEExtendedException.InitModuleInfo;
+{$IFDEF Windows}
+{$IF not Declared(UNICODE_STRING_MAX_CHARS)}
+const
+  UNICODE_STRING_MAX_CHARS = 32767;
+{$IFEND}
+var
+  ModuleFileName: WideString;
+begin
+SetLength(ModuleFileName,UNICODE_STRING_MAX_CHARS);
+SetLength(ModuleFileName,GetModuleFileNameExW(GetCurrentProcess,hInstance,PWideChar(ModuleFileName),Length(ModuleFileName)));
+fModuleInfo.FileName := WideToStr(ModuleFileName);
+fModuleInfo.FileInfo := TWinFileInfo.Create(fModuleInfo.FileName,WFI_LS_All);
+end;
+{$ELSE}
+var
+  ModuleFileName: String;
+  Info:           dl_info;
+begin
+ModuleFileName := '';
+FillChar(Addr(Info)^,SizeOf(dl_info),0);
+If dladdr(@GetX87ControlWord{a function in this unit},@Info) <> 0 then
+  If Assigned(Info.dli_fname) then
+    ModuleFileName := ExpandFileName(String(Info.dli_fname));
+fModuleInfo.FileName := ModuleFileName;
+fModuleInfo.FileInfo := TWinFileInfo.Create(fModuleInfo.FileName,WFI_LS_All);
+end;
+{$ENDIF}
+
+//------------------------------------------------------------------------------
+
 procedure EAEExtendedException.InitModulesInfo;
 {$IFDEF Windows}
 var
@@ -1988,6 +2069,8 @@ If Assigned(fStackTrace.StackDump) and (fStackTrace.StackDumpSize <> 0) then
   FreeMem(fStackTrace.StackDump,fStackTrace.StackDumpSize);
 If Assigned(fProcessInfo.FileInfo) then
   fProcessInfo.FileInfo.Free;
+If Assigned(fModuleInfo.FileInfo) then
+  fModuleInfo.FileInfo.Free;
 For i := Low(fModulesInfo.Modules) to High(fModulesInfo.Modules) do
   fModulesInfo.Modules[i].FileInfo.Free;
 end;
@@ -2019,6 +2102,12 @@ InitProcessInfo;
 {$ELSE}
 FillChar(fProcessInfo,SizeOf(TAEProcessInfo),0);
 {$ENDIF}
+// current module info
+{$IFDEF ExtendedExceptionProcess}
+InitModuleInfo;
+{$ELSE}
+FillChar(fModuleInfo,SizeOf(TAECurrModuleInfo),0);
+{$ENDIF}  
 // modules info
 {$IFDEF ExtendedExceptionModules}
 InitModulesInfo;
