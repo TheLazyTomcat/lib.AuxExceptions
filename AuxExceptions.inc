@@ -13,7 +13,7 @@
     AuxExceptions library. It is stored separately to allow for classes
     rebasing.
 
-  Version 1.1 (2022-09-26)
+  Version 1.1 (2022-09-30)
 
   Last change 2022-09-30
 
@@ -133,7 +133,6 @@
 {$IFDEF AuxExceptions_ExtendedExceptionProcess_ON}
   {$DEFINE ExtendedExceptionProcess}
 {$ENDIF}
-{$DEFINE ExtendedExceptionProcess}{$message 'dev - remove'}
 
 {
   ExtendedExceptionModule
@@ -153,7 +152,6 @@
 {$IFDEF AuxExceptions_ExtendedExceptionModule_ON}
   {$DEFINE ExtendedExceptionModule}
 {$ENDIF}
-{$DEFINE ExtendedExceptionModule}{$message 'dev - remove'}
 
 {
   ExtendedExceptionModules
@@ -172,10 +170,24 @@
 {$IFDEF AuxExceptions_ExtendedExceptionModules_ON}
   {$DEFINE ExtendedExceptionModules}
 {$ENDIF}
-{$DEFINE ExtendedExceptionModules}{$message 'dev - remove'}
 
+{
+  ExtendedExceptionThreads
 
-{.$DEFINE ExtendedExceptionThreads}
+  When defined, the extended exception will obtain a list of all threads within
+  the current process.
+
+  Has no effect when symbol AllowExtendedException is not defined.
+
+  Not defined by default.
+
+  To enable/define this symbol in a project without changing this library,
+  define project-wide symbol AuxExceptions_ExtendedExceptionThreads_ON.
+}
+{$UNDEF ExtendedExceptionThreads}
+{$IFDEF AuxExceptions_ExtendedExceptionThreads_ON}
+  {$DEFINE ExtendedExceptionThreads}
+{$ENDIF}
 
 //------------------------------------------------------------------------------
 
@@ -564,11 +576,13 @@ type
     fProcessInfo: TAEProcessInfo;
     fModuleInfo:  TAECurrModuleInfo;
     fModulesInfo: TAEModulesInfo;
+    fThreadsInfo: TAEThreadsInfo;
     procedure InitRegisters; virtual;
     procedure InitStackTrace; virtual;
     procedure InitProcessInfo; virtual;
     procedure InitModuleInfo; virtual;
     procedure InitModulesInfo; virtual;
+    procedure InitThreadsInfo; virtual;
     procedure Finalize; virtual;
   public
     constructor CreateFmt(const Msg: String; Args: array of const);
@@ -578,6 +592,7 @@ type
     property ProcessInfo: TAEProcessInfo read fProcessInfo;
     property ModuleInfo: TAECurrModuleInfo read fModuleInfo;
     property ModulesInfo: TAEModulesInfo read fModulesInfo;
+    property ThreadsInfo: TAEThreadsInfo read fThreadsInfo;
   end;
 
 {$ENDIF ExtendedException}
@@ -767,7 +782,7 @@ uses
   {$IFDEF Windows}
     ,{$IFDEF FPC}jwaTlHelp32, jwaPsApi{$ELSE}TlHelp32, PsApi{$ENDIF}, StrRect
   {$ELSE}
-    , Classes, dl, StrUtils, UInt64Utils
+    , Classes, StrUtils, dl, UInt64Utils
   {$ENDIF}, SimpleCPUID
 {$ENDIF};
 
@@ -776,7 +791,6 @@ uses
 {$IFDEF FPC_DisableWarns}
   {$DEFINE FPCDWM}
   {$DEFINE W4055:={$WARN 4055 OFF}}   // Conversion between ordinals and pointers is not portable
-  {$DEFINE W4056:={$WARN 4056 OFF}}   // Conversion between ordinals and pointers is not portable
   {$DEFINE W7102:={$WARN 7102 OFF}}   // Use of +offset(%ebp) for parameters invalid here
   {$PUSH}{$WARN 2005 OFF}             // Comment level $1 found
   {$IF Defined(FPC) and (FPC_FULLVERSION >= 30000)}
@@ -805,7 +819,7 @@ uses
 ===============================================================================}
 {$IFNDEF Windows}
 
-function getpid: pid_t; cdecl; external;
+Function getpid: pid_t; cdecl; external;
 
 //------------------------------------------------------------------------------
 
@@ -1446,8 +1460,8 @@ case fParsStage of
                     Result := TryStrToUInt64('$' + Trim(TokenStr),Temp64);
                     If Result then
                       begin
-                      {$IFDEF FPCDWM}{$PUSH}W4055 W4056{$ENDIF}
-                        fParsMapsLine.StartAddr := Pointer(Temp64);
+                      {$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
+                        fParsMapsLine.StartAddr := Pointer(PtrUInt(Temp64));
                       {$IFDEF FPCDWM}{$POP}{$ENDIF}
                         fParsStage := mplsEndAddr;
                       end;
@@ -1456,8 +1470,8 @@ case fParsStage of
                     Result := TryStrToUInt64('$' + Trim(TokenStr),Temp64);
                     If Result then
                       begin
-                      {$IFDEF FPCDWM}{$PUSH}W4055 W4056{$ENDIF}
-                        fParsMapsLine.EndAddr := Pointer(Temp64);
+                      {$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
+                        fParsMapsLine.EndAddr := Pointer(PtrUInt(Temp64));
                       {$IFDEF FPCDWM}{$POP}{$ENDIF}
                         fParsStage := mplsPerms;
                         end;
@@ -2061,6 +2075,86 @@ end;
 
 //------------------------------------------------------------------------------
 
+procedure EAEExtendedException.InitThreadsInfo;
+{$IFDEF Windows}
+var
+  HelpSnapshot: THandle;
+  ThreadEntry:  TThreadEntry32;
+  ThreadCount:  Integer;
+begin
+HelpSnapshot := CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD,0);
+If HelpSnapshot <> INVALID_HANDLE_VALUE then
+  try
+    ThreadCount := 0;
+    SetLength(fThreadsInfo.Threads,0);
+    ThreadEntry.dwSize := SizeOf(TThreadEntry32);
+    // enum the modules
+    If Thread32First(HelpSnapshot,ThreadEntry) then
+      repeat
+        // check that the thread IDs are available
+      {$IFDEF FPCDWM}{$PUSH}W4055{$ENDIF}
+        If ThreadEntry.dwSize < (PtrUInt(Addr(TThreadEntry32(nil^).th32ThreadID)) + SizeOf(DWORD)) then
+      {$IFDEF FPCDWM}{$POP}{$ENDIF}
+          Exit;
+        // all threads in system are enumerated, get only those belonging to this process
+        If ThreadEntry.th32OwnerProcessID = fProcessID then
+          begin
+            // grow the list
+            If Length(fThreadsInfo.Threads) <= ThreadCount then
+              SetLength(fThreadsInfo.Threads,Length(fThreadsInfo.Threads) + 16);
+            fThreadsInfo.Threads[ThreadCount].ThreadID := ThreadEntry.th32ThreadID;
+            Inc(ThreadCount);
+          end;
+      until not Thread32Next(HelpSnapshot,ThreadEntry);
+    SetLength(fThreadsInfo.Threads,ThreadCount);
+  finally
+    CloseHandle(HelpSnapshot);
+  end
+else FillChar(fThreadsInfo,SizeOf(TAEThreadsInfo),0);
+end;
+{$ELSE}
+const
+  DT_DIR = 4;
+var
+  DirStreamPtr: PDir;
+  DirEntryPtr:  PDirEnt;
+  TempStrLen:   TStrSize;
+  TempStr:      String;
+  TempTID:      TAEThreadID;
+  ThreadCount:  Integer;
+begin
+DirStreamPtr := fpOpenDir(Format('/proc/%d/task/',[fProcessID]));
+If Assigned(DirStreamPtr) then
+  try
+    ThreadCount := 0;
+    SetLength(fThreadsInfo.Threads,0);
+    repeat
+      DirEntryPtr := fpReadDir(DirStreamPtr^);
+      If Assigned(DirEntryPtr) then
+        If DirEntryPtr^.d_type = DT_DIR then
+          begin
+            TempStrLen := StrLen(DirEntryPtr^.d_name);
+            SetLength(TempStr,TempStrLen);
+            Move(DirEntryPtr^.d_name,PChar(TempStr)^,TempStrLen * SizeOf(Char));
+            If TryStrToInt(TempStr,TempTID) then
+              begin
+                If Length(fThreadsInfo.Threads) <= ThreadCount then
+                  SetLength(fThreadsInfo.Threads,Length(fThreadsInfo.Threads) + 16);
+                fThreadsInfo.Threads[ThreadCount].ThreadID := TempTID;
+                Inc(ThreadCount);
+              end;
+          end;
+    until not Assigned(DirEntryPtr);
+    SetLength(fThreadsInfo.Threads,ThreadCount);
+  finally
+    fpCloseDir(DirStreamPtr^);
+  end
+else FillChar(fThreadsInfo,SizeOf(TAEThreadsInfo),0);
+end;
+{$ENDIF}
+
+//------------------------------------------------------------------------------
+
 procedure EAEExtendedException.Finalize;
 var
   i:  Integer;
@@ -2116,7 +2210,9 @@ FillChar(fModulesInfo,SizeOf(TAEModulesInfo),0);
 {$ENDIF}
 // threads info
 {$IFDEF ExtendedExceptionThreads}
+InitThreadsInfo;
 {$ELSE}
+FillChar(fThreadsInfo,SizeOf(TAEThreadsInfo),0);
 {$ENDIF}
 end;
 

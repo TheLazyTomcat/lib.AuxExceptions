@@ -46,9 +46,20 @@
         in-dump), size and return address (corresponds to an address inside of
         function that was using this stack frame) are stored.
 
-  Version 1.1 (2022-09-26)
+      Modules list:
 
-  Last change 2022-09-26
+        In Linux, this list is obtained by parsing "/proc/[pid]/maps" file, so
+        it might not be completely accurate and might not show all loaded
+        modules (eg. vdso).
+
+      Threads list:
+
+        In Linux, this list might not be accurate as the threads can be created
+        and/or destroyed during the enumeration.
+
+  Version 1.1 (2022-09-30)
+
+  Last change 2022-09-30
 
   ©2019-2022 František Milt
 
