@@ -13,9 +13,9 @@
     AuxExceptions library. It is stored separately to allow for classes
     rebasing.
 
-  Version 1.2 (2024-03-04)
+  Version 1.2.1 (2024-04-14)
 
-  Last change 2024-03-04
+  Last change 2024-04-14
 
   ©2019-2024 František Milt
 
@@ -114,7 +114,7 @@
 {$IFDEF AE_Include_Interface_Uses}
 uses
   SysUtils{$IFNDEF Windows}, BaseUnix{$ENDIF},
-  AuxTypes{$IFDEF AE_ExtendedException}, WinFileInfo{$ENDIF};
+  AuxTypes;
 
 {$ENDIF AE_Include_Interface_Uses}
 
@@ -474,7 +474,7 @@ type
   TAEProcessInfo = record
     ProcessID:    TAEProcessID;
     ExecFileName: String;
-    FileInfo:     TWinFileInfo;
+    FileInfo:     TObject;
   end;
 
 {-------------------------------------------------------------------------------
@@ -483,7 +483,7 @@ type
 type
   TAECurrModuleInfo = record
     FileName: String;
-    FileInfo: TWinFileInfo;
+    FileInfo: TObject;
   end;
 
 {-------------------------------------------------------------------------------
@@ -520,7 +520,7 @@ type
     ExecMemory:     Pointer;
     ExecSize:       TMemSize;
     ExecContiguous: Boolean;
-    FileInfo:       TWinFileInfo;
+    FileInfo:       TObject;
   end;
 
   TAEModulesInfo = record
@@ -755,7 +755,7 @@ type
 {$IFDEF AE_Include_Implementation_Uses}
 uses
   Variants {$IFDEF Windows}, Windows{$ELSE}, syscall, pthreads{$ENDIF}
-{$IFDEF AE_ExtendedException}
+{$IFDEF AE_ExtendedException}, WinFileInfo
   {$IFDEF Windows}
     ,{$IFDEF FPC}jwaTlHelp32, jwaPsApi{$ELSE}TlHelp32, PsApi{$ENDIF}, StrRect
   {$ELSE}
