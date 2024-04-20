@@ -13,9 +13,9 @@
     AuxExceptions library. It is stored separately to allow for classes
     rebasing.
 
-  Version 1.2.1 (2024-04-14)
+  Version 1.2.2 (2024-04-20)
 
-  Last change 2024-04-14
+  Last change 2024-04-20
 
   ©2019-2024 František Milt
 
@@ -1197,10 +1197,6 @@ If not Assigned(RegistersSnapshot) then
 end;
 
 //------------------------------------------------------------------------------
-const
-  X87CW_EMASK_InvalidOP = UInt16($0001);
-
-//------------------------------------------------------------------------------
 
 Function GetX87ControlWord: UInt16; register; assembler;
 var
@@ -1449,6 +1445,8 @@ end;
 //------------------------------------------------------------------------------
 
 Function RegistersSnapshotGet(out Snapshot: TAERegisters; Cleanup: Boolean = False): Boolean;
+const
+  X87CW_EMASK = ($003B);  // invop, denormal, overflow, undeflow, precision
 var
   TLSRegsPtr: PAERegistersStorage;
   i:          Integer;
@@ -1486,7 +1484,7 @@ If Assigned(RegistersSnapshot) then
       begin
         OldX87CW := GetX87ControlWord;
         try
-          SetX87ControlWord(OldX87CW or X87CW_EMASK_InvalidOP);
+          SetX87ControlWord(OldX87CW or X87CW_EMASK);
           For i := 0 to 7 do
             begin
               Move(TLSRegsPtr^.Stack[i],Snapshot.Float.Stack[i],10);

@@ -57,9 +57,9 @@
         In Linux, this list might not be accurate as the threads can be created
         and/or destroyed during the enumeration.
 
-  Version 1.2.1 (2024-04-14)
+  Version 1.2.2 (2024-04-20)
 
-  Last change 2024-04-14
+  Last change 2024-04-20
 
   ©2019-2024 František Milt
 
