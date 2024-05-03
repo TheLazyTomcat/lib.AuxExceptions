@@ -46,6 +46,8 @@
   AllowExtendedException is defined. Also, StrRect is required only when
   compiling for Windows OS and UInt64Utils when compiling for Linux OS.
 
+  Library StrRect might also be required as an indirect dependency.
+
 ===============================================================================}
 {$IFDEF AE_Include_Defs}
 {
